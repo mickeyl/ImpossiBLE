@@ -6,6 +6,8 @@ APP_BIN = $(APP_BUNDLE)/Contents/MacOS/impossible-helper
 INSTALL_DIR = $(HOME)/.local/bin
 INSTALLED_APP = $(INSTALL_DIR)/impossible-helper.app
 HELPER_BIN_NAME = impossible-helper
+CODESIGN_MATCH ?= Apple Development
+SIGN_IDENTITY := $(shell security find-identity -v -p codesigning | awk -F'"' '/$(CODESIGN_MATCH)/ {print $$2; exit}')
 
 .PHONY: helper install clean run restart watch
 
@@ -16,7 +18,13 @@ $(APP_BIN): $(HELPER_SRC) $(HELPER_PLIST) $(HELPER_ENTITLEMENTS)
 	cp $(HELPER_PLIST) $(APP_BUNDLE)/Contents/Info.plist
 	clang -fobjc-arc -framework Foundation -framework CoreBluetooth \
 		-o $(APP_BIN) $(HELPER_SRC)
-	codesign --force --sign "Apple Development: Michael Lauer (BN4S5ZMC43)" --entitlements $(HELPER_ENTITLEMENTS) $(APP_BUNDLE)
+	@if [ -z "$(SIGN_IDENTITY)" ]; then \
+		echo "ERROR: No codesigning identity matching '$(CODESIGN_MATCH)' found in your keychain."; \
+		echo "Install an Apple Development certificate or set CODESIGN_MATCH to another substring."; \
+		exit 1; \
+	fi
+	@echo "Codesigning with: $(SIGN_IDENTITY)"
+	codesign --force --sign "$(SIGN_IDENTITY)" --entitlements $(HELPER_ENTITLEMENTS) $(APP_BUNDLE)
 
 install: helper
 	mkdir -p $(INSTALL_DIR)

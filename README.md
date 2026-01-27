@@ -31,6 +31,7 @@ Your app code remains unchanged -- `CBCentralManager`, `CBPeripheral`, delegate 
 
 - macOS with Bluetooth hardware
 - Xcode 15+ (Swift Package Manager)
+- Apple Development codesigning certificate in your login keychain (or set `CODESIGN_MATCH` to another identity substring)
 - `fswatch` (optional, for `make watch` auto-rebuild)
 
 ## Quick Start
