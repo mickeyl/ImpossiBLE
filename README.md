@@ -87,6 +87,18 @@ That is all. The library activates automatically via `+load` on simulator builds
 - **Single client** -- only one simulator app can connect to the helper at a time.
 - **Helper must be running** -- start it before launching your app in the simulator.
 
+## Roadmap to 1.0 (Goal: 100% CoreBluetooth Coverage)
+
+The goal is full CoreBluetooth API coverage in the simulator. Real-device testing is still required, but this tracks what remains before a 1.0 release:
+
+- [ ] **Peripheral role support** (advertising, GATT server, write/notify from the peripheral side).
+- [ ] **Multiple simulator clients** (concurrent apps connecting to the helper).
+- [ ] **Full descriptor support** (discover/read/write descriptors beyond characteristics).
+- [ ] **Improved state/authorization fidelity** (authorization states, feature gating, and error codes matching device behavior).
+- [ ] **State restoration parity** (`CBCentralManager` restoration flows).
+- [ ] **Pairing / security flows** (bonding, encryption-required characteristics, and relevant errors).
+- [ ] **Performance + robustness** (larger payloads, stress testing, graceful reconnects, helper auto-restart).
+
 ## License
 
 MIT -- see [LICENSE](LICENSE) for details.
