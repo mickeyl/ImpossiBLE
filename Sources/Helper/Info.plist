@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>de.tpe-europe.impossible-helper</string>
+	<key>CFBundleName</key>
+	<string>impossible-helper</string>
+	<key>CFBundleExecutable</key>
+	<string>impossible-helper</string>
+	<key>LSBackgroundOnly</key>
+	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>ImpossiBLE helper needs Bluetooth to bridge BLE to the iOS Simulator.</string>
+</dict>
+</plist>
