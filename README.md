@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" alt="ImpossiBLE logo" width="256">
+  <img src="logo.png" alt="ImpossiBLE logo" width="320">
 </p>
 
 # ImpossiBLE
@@ -7,6 +7,10 @@
 **Use real Bluetooth Low Energy hardware from the iOS Simulator.**
 
 Apple's `CoreBluetooth` framework does not function inside the iOS Simulator -- peripherals cannot be discovered, connections fail silently, and the `CBCentralManager` state never reaches `poweredOn`. ImpossiBLE makes the impossible possible by transparently bridging BLE operations from your simulated app to actual Bluetooth hardware on the host Mac.
+
+## Simulator Reality (and Why This Exists)
+
+Older iOS Simulator builds exposed *some* CoreBluetooth behavior, but it was incomplete and eventually fell out of maintenance. Apple has long recommended that developers test Bluetooth flows on real devices, and that recommendation still stands. ImpossiBLE is not a replacement for on-device testing -- it is a convenience layer so you can iterate faster between device runs.
 
 ## How It Works
 
@@ -17,6 +21,14 @@ ImpossiBLE is a two-process architecture:
 2. **Helper** (runs natively on macOS) -- A lightweight background app that listens on `/tmp/impossible.sock`, translates the JSON messages into real `CoreBluetooth` API calls, and sends results back.
 
 Your app code remains unchanged -- `CBCentralManager`, `CBPeripheral`, delegate callbacks, and all other CoreBluetooth types work as expected.
+
+### Under the Hood (Technical Details)
+
+- **Method swizzling on the simulator**: the library swizzles `CBCentralManager` init/state/scan/connect APIs and routes them to a local transport.
+- **Proxy CoreBluetooth objects**: it creates shim `CBPeripheral`, `CBService`, `CBCharacteristic`, and `CBL2CAPChannel` objects so your app sees real types.
+- **Transport**: newline-delimited JSON over a Unix domain socket (`/tmp/impossible.sock`).
+- **Data encoding**: characteristic values and L2CAP payloads are base64-encoded across the wire.
+- **Callback fidelity**: delegate callbacks are dispatched back onto the original `CBCentralManager` delegate queue.
 
 ## Features
 
