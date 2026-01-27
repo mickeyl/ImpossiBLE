@@ -356,11 +356,16 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
             return;
         }
         dispatch_async(dispatch_get_main_queue(), ^{
+            channel.inputStream.delegate = nil;
+            channel.outputStream.delegate = nil;
+            [channel.inputStream removeFromRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
+            [channel.outputStream removeFromRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
             [channel.inputStream close];
             [channel.outputStream close];
         });
         [self.l2capById removeObjectForKey:chanId];
         [self removeStreamMappingsForChannelId:chanId];
+        [self sendMessage:@{@"type": @"l2capClosed", @"channelId": chanId}];
         return;
     }
 }
@@ -653,6 +658,17 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
 
     if (eventCode == NSStreamEventEndEncountered || eventCode == NSStreamEventErrorOccurred) {
         [self sendMessage:@{@"type": @"l2capClosed", @"channelId": chanId}];
+        CBL2CAPChannel *channel = self.l2capById[chanId];
+        if (channel) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                channel.inputStream.delegate = nil;
+                channel.outputStream.delegate = nil;
+                [channel.inputStream removeFromRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
+                [channel.outputStream removeFromRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
+                [channel.inputStream close];
+                [channel.outputStream close];
+            });
+        }
         [self.l2capById removeObjectForKey:chanId];
         [self removeStreamMappingsForChannelId:chanId];
         return;

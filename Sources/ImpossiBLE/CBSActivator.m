@@ -105,6 +105,7 @@ static void cbs_l2cap_setup_read(NSString *chanId, int fd) {
         ssize_t n = read(fd, buf, sizeof(buf));
         if (n <= 0) {
             CBSConnectionSend(@{@"type": @"l2capClose", @"channelId": chanId});
+            cbs_l2cap_close(chanId);
             return;
         }
         NSData *data = [NSData dataWithBytes:buf length:(NSUInteger)n];
