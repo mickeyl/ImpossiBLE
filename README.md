@@ -31,7 +31,7 @@ Your app code remains unchanged -- `CBCentralManager`, `CBPeripheral`, delegate 
 
 - macOS with Bluetooth hardware
 - Xcode 15+ (Swift Package Manager)
-- Apple Development codesigning certificate in your login keychain (or set `CODESIGN_MATCH` to another identity substring)
+- Codesigning certificate recommended (optional). If none matches `CODESIGN_MATCH`, the helper builds unsigned with a warning.
 - `fswatch` (optional, for `make watch` auto-rebuild)
 
 ## Quick Start

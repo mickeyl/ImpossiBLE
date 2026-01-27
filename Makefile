@@ -19,12 +19,12 @@ $(APP_BIN): $(HELPER_SRC) $(HELPER_PLIST) $(HELPER_ENTITLEMENTS)
 	clang -fobjc-arc -framework Foundation -framework CoreBluetooth \
 		-o $(APP_BIN) $(HELPER_SRC)
 	@if [ -z "$(SIGN_IDENTITY)" ]; then \
-		echo "ERROR: No codesigning identity matching '$(CODESIGN_MATCH)' found in your keychain."; \
-		echo "Install an Apple Development certificate or set CODESIGN_MATCH to another substring."; \
-		exit 1; \
+		echo "WARNING: No codesigning identity matching '$(CODESIGN_MATCH)' found in your keychain."; \
+		echo "Proceeding unsigned. Install a certificate or set CODESIGN_MATCH to sign."; \
+	else \
+		echo "Codesigning with: $(SIGN_IDENTITY)"; \
+		codesign --force --sign "$(SIGN_IDENTITY)" --entitlements $(HELPER_ENTITLEMENTS) $(APP_BUNDLE); \
 	fi
-	@echo "Codesigning with: $(SIGN_IDENTITY)"
-	codesign --force --sign "$(SIGN_IDENTITY)" --entitlements $(HELPER_ENTITLEMENTS) $(APP_BUNDLE)
 
 install: helper
 	mkdir -p $(INSTALL_DIR)
