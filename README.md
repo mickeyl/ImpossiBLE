@@ -98,6 +98,7 @@ The goal is full CoreBluetooth API coverage in the simulator. Real-device testin
 - [ ] **State restoration parity** (`CBCentralManager` restoration flows).
 - [ ] **Pairing / security flows** (bonding, encryption-required characteristics, and relevant errors).
 - [ ] **Performance + robustness** (larger payloads, stress testing, graceful reconnects, helper auto-restart).
+- [ ] **Configurable mocking schemes** (scriptable scan/connect/service/characteristic responses and fault injection to enable deterministic tests without real hardware).
 
 ## License
 
