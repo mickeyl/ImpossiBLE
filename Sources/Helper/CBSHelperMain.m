@@ -20,6 +20,7 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
 @property(nonatomic, strong) NSArray<CBUUID *> *pendingServices;
 @property(nonatomic, strong) NSDictionary *pendingOptions;
 @property(nonatomic, assign) int clientFd;
+@property(nonatomic, assign) uint64_t clientGeneration;
 @end
 
 @implementation CBSHelper
@@ -76,14 +77,24 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
                 perror("accept");
                 continue;
             }
+            int noSigPipe = 1;
+            if (setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, sizeof(noSigPipe)) != 0) {
+                perror("setsockopt(SO_NOSIGPIPE)");
+            }
+            if (self.clientFd >= 0) {
+                NSLog(@"ImpossiBLE-Helper: replacing existing client");
+                [self handleClientDisconnectForFd:self.clientFd generation:self.clientGeneration];
+            }
             NSLog(@"ImpossiBLE-Helper: client connected");
             self.clientFd = client;
-            [self startReaderForClient:client];
+            self.clientGeneration += 1;
+            uint64_t generation = self.clientGeneration;
+            [self startReaderForClient:client generation:generation];
         }
     });
 }
 
-- (void)startReaderForClient:(int)fd {
+- (void)startReaderForClient:(int)fd generation:(uint64_t)generation {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSMutableData *buffer = [NSMutableData data];
         while (1) {
@@ -91,6 +102,7 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
             ssize_t n = read(fd, tmp, sizeof(tmp));
             if (n <= 0) {
                 NSLog(@"ImpossiBLE-Helper: client disconnected");
+                [self handleClientDisconnectForFd:fd generation:generation];
                 break;
             }
             [buffer appendBytes:tmp length:(NSUInteger)n];
@@ -111,6 +123,46 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
                 [buffer replaceBytesInRange:NSMakeRange(0, idx + 1) withBytes:NULL length:0];
                 [self handleMessageLine:line];
             }
+        }
+    });
+}
+
+- (void)handleClientDisconnectForFd:(int)fd generation:(uint64_t)generation {
+    if (fd < 0) {
+        return;
+    }
+    if (generation != self.clientGeneration || fd != self.clientFd) {
+        return;
+    }
+    self.clientFd = -1;
+    close(fd);
+
+    NSArray<CBPeripheral *> *peripherals = [self.peripherals allValues];
+    NSArray<CBL2CAPChannel *> *channels = [self.l2capById allValues];
+
+    [self.peripherals removeAllObjects];
+    [self.servicesById removeAllObjects];
+    [self.characteristicsById removeAllObjects];
+    [self.l2capById removeAllObjects];
+    [self.streamToL2capId removeAllObjects];
+    self.pendingServices = nil;
+    self.pendingOptions = nil;
+
+    dispatch_async(self.cbQueue, ^{
+        [self.central stopScan];
+        for (CBPeripheral *peripheral in peripherals) {
+            [self.central cancelPeripheralConnection:peripheral];
+        }
+    });
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        for (CBL2CAPChannel *channel in channels) {
+            channel.inputStream.delegate = nil;
+            channel.outputStream.delegate = nil;
+            [channel.inputStream removeFromRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
+            [channel.outputStream removeFromRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
+            [channel.inputStream close];
+            [channel.outputStream close];
         }
     });
 }
@@ -386,6 +438,7 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
 
 - (void)sendMessage:(NSDictionary *)msg {
     int fd = self.clientFd;
+    uint64_t generation = self.clientGeneration;
     if (fd < 0) {
         return;
     }
@@ -394,8 +447,14 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
     if (!data) {
         return;
     }
-    write(fd, data.bytes, data.length);
-    write(fd, "\n", 1);
+    if (![self writeAllToFd:fd bytes:data.bytes length:data.length]) {
+        [self handleClientDisconnectForFd:fd generation:generation];
+        return;
+    }
+    if (![self writeAllToFd:fd bytes:"\n" length:1]) {
+        [self handleClientDisconnectForFd:fd generation:generation];
+        return;
+    }
 }
 
 #pragma mark - Helpers
@@ -408,6 +467,20 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
     for (NSString *key in keys) {
         [self.streamToL2capId removeObjectForKey:key];
     }
+}
+
+- (BOOL)writeAllToFd:(int)fd bytes:(const void *)bytes length:(size_t)length {
+    const uint8_t *ptr = (const uint8_t *)bytes;
+    size_t remaining = length;
+    while (remaining > 0) {
+        ssize_t n = write(fd, ptr, remaining);
+        if (n <= 0) {
+            return NO;
+        }
+        ptr += (size_t)n;
+        remaining -= (size_t)n;
+    }
+    return YES;
 }
 
 - (NSString *)serviceIdForPeripheral:(CBPeripheral *)peripheral service:(CBService *)service index:(NSUInteger)index {
