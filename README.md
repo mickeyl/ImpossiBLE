@@ -84,7 +84,7 @@ That is all. The library activates automatically via `+load` on simulator builds
 ## Limitations
 
 - **Central role only** -- peripheral/broadcaster mode is not supported.
-- **Single client** -- only one simulator app can connect to the helper at a time.
+- **Single client** -- only one simulator app can connect to the helper at a time. A new client connection replaces the existing one; the previous client is dropped and the helper tears down scans, connections, and L2CAP channels. The new client does not receive an explicit "busy" error.
 - **Helper must be running** -- start it before launching your app in the simulator.
 
 ## Roadmap to 1.0 (Goal: 100% CoreBluetooth Coverage)
