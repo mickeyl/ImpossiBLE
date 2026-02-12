@@ -31,6 +31,7 @@ install: helper
 	mkdir -p $(INSTALL_DIR)
 	rm -rf $(INSTALLED_APP)
 	cp -R $(APP_BUNDLE) $(INSTALL_DIR)/
+	install -m 755 bin/impossible-helper $(INSTALL_DIR)/impossible-helper
 
 restart: install
 	-pkill -f $(HELPER_BIN_NAME) 2>/dev/null; sleep 0.5

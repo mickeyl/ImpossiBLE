@@ -1,0 +1,141 @@
+#!/bin/bash
+set -euo pipefail
+
+LABEL="de.tpe-europe.impossible-helper"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+
+resolve_app() {
+    local self_dir
+    self_dir="$(cd "$(dirname "$0")" && pwd)"
+
+    # Homebrew layout: bin/impossible-helper → ../libexec/impossible-helper.app
+    local candidate="$self_dir/../libexec/impossible-helper.app"
+    if [ -d "$candidate" ]; then
+        echo "$candidate"
+        return
+    fi
+
+    # make install layout: bin/impossible-helper alongside bin/impossible-helper.app
+    candidate="$self_dir/impossible-helper.app"
+    if [ -d "$candidate" ]; then
+        echo "$candidate"
+        return
+    fi
+
+    echo "Error: cannot locate impossible-helper.app" >&2
+    exit 1
+}
+
+APP_BUNDLE="$(resolve_app)"
+APP_BINARY="$APP_BUNDLE/Contents/MacOS/impossible-helper"
+
+helper_pid() {
+    pgrep -f "impossible-helper.app/Contents/MacOS" 2>/dev/null || true
+}
+
+do_start() {
+    local pid
+    pid="$(helper_pid)"
+    if [ -n "$pid" ]; then
+        echo "impossible-helper already running (PID $pid)"
+        return
+    fi
+    open "$APP_BUNDLE"
+    echo "impossible-helper started"
+}
+
+do_stop() {
+    local pid
+    pid="$(helper_pid)"
+    if [ -z "$pid" ]; then
+        echo "impossible-helper is not running"
+        return
+    fi
+    kill "$pid"
+    echo "impossible-helper stopped (was PID $pid)"
+}
+
+do_restart() {
+    local pid
+    pid="$(helper_pid)"
+    if [ -n "$pid" ]; then
+        kill "$pid"
+        sleep 0.5
+    fi
+    open "$APP_BUNDLE"
+    echo "impossible-helper restarted"
+}
+
+do_status() {
+    local pid
+    pid="$(helper_pid)"
+    if [ -n "$pid" ]; then
+        echo "impossible-helper is running (PID $pid)"
+    else
+        echo "impossible-helper is stopped"
+    fi
+}
+
+do_install() {
+    mkdir -p "$(dirname "$PLIST")"
+    cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$LABEL</string>
+    <key>Program</key>
+    <string>$APP_BINARY</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+</dict>
+</plist>
+EOF
+    launchctl load "$PLIST"
+    echo "LaunchAgent installed and loaded"
+    echo "impossible-helper will now start automatically at login"
+}
+
+do_uninstall() {
+    if [ ! -f "$PLIST" ]; then
+        echo "LaunchAgent not installed"
+        return
+    fi
+    launchctl unload "$PLIST" 2>/dev/null || true
+    rm -f "$PLIST"
+    echo "LaunchAgent uninstalled"
+}
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [command]
+
+Commands:
+  start       Launch the helper (default)
+  stop        Stop the helper
+  restart     Stop then start the helper
+  status      Show whether the helper is running
+  install     Set up auto-start at login via launchctl
+  uninstall   Remove the auto-start LaunchAgent
+  help        Show this message
+EOF
+}
+
+case "${1:-start}" in
+    start)     do_start ;;
+    stop)      do_stop ;;
+    restart)   do_restart ;;
+    status)    do_status ;;
+    install)   do_install ;;
+    uninstall) do_uninstall ;;
+    help|--help|-h) usage ;;
+    *)
+        echo "Unknown command: $1" >&2
+        usage >&2
+        exit 1
+        ;;
+esac
