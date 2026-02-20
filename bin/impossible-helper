@@ -4,15 +4,37 @@ set -euo pipefail
 LABEL="de.tpe-europe.impossible-helper"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
+resolve_script_dir() {
+    local source path_dir
+    source="${BASH_SOURCE[0]}"
+    while [ -L "$source" ]; do
+        path_dir="$(cd -P "$(dirname "$source")" && pwd)"
+        source="$(readlink "$source")"
+        [[ "$source" != /* ]] && source="$path_dir/$source"
+    done
+    cd -P "$(dirname "$source")" && pwd
+}
+
 resolve_app() {
     local self_dir
-    self_dir="$(cd "$(dirname "$0")" && pwd)"
+    self_dir="$(resolve_script_dir)"
 
     # Homebrew layout: bin/impossible-helper → ../libexec/impossible-helper.app
     local candidate="$self_dir/../libexec/impossible-helper.app"
     if [ -d "$candidate" ]; then
         echo "$candidate"
         return
+    fi
+
+    # Stable Homebrew location via /opt/homebrew/opt or /usr/local/opt.
+    if command -v brew >/dev/null 2>&1; then
+        local brew_prefix
+        brew_prefix="$(brew --prefix)"
+        candidate="$brew_prefix/opt/impossible/libexec/impossible-helper.app"
+        if [ -d "$candidate" ]; then
+            echo "$candidate"
+            return
+        fi
     fi
 
     # make install layout: bin/impossible-helper alongside bin/impossible-helper.app
