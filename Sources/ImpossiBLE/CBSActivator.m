@@ -16,17 +16,20 @@ static void *kCBSDelegateQueueKey = &kCBSDelegateQueueKey;
 static void *kCBSIsScanningKey = &kCBSIsScanningKey;
 static void *kCBSScanServiceFilterKey = &kCBSScanServiceFilterKey;
 static void *kCBSScanWireOptionsKey = &kCBSScanWireOptionsKey;
+static void *kCBSCentralKeyKey = &kCBSCentralKeyKey;
 static CBCentralManager *cbs_owner_central_for_peripheral(NSUUID *identifier);
+static NSArray<CBSPeripheral *> *cbs_all_peripherals_for_uuid(NSUUID *uuid);
+static uint64_t gNextCentralId = 1;
 
 static CBCentralManager *gCentral;
 static NSHashTable<CBCentralManager *> *gCentrals;
 static NSMapTable<NSString *, CBCentralManager *> *gCentralByKey;
 static NSMutableDictionary<NSUUID *, NSString *> *gPeripheralOwners;
 static NSDictionary *gActiveScanPayload;
-static NSMutableDictionary<NSUUID *, CBSPeripheral *> *gPeripherals;
-static NSMutableDictionary<NSString *, CBSService *> *gServices;
-static NSMutableDictionary<NSString *, CBSCharacteristic *> *gCharacteristics;
-static NSMutableDictionary<NSString *, CBSDescriptor *> *gDescriptors;
+static NSMutableDictionary<NSString *, NSMutableDictionary<NSUUID *, CBSPeripheral *> *> *gPeripheralsByCentral;
+static NSMutableDictionary<NSString *, NSMutableDictionary<NSString *, CBSService *> *> *gServicesByCentral;
+static NSMutableDictionary<NSString *, NSMutableDictionary<NSString *, CBSCharacteristic *> *> *gCharacteristicsByCentral;
+static NSMutableDictionary<NSString *, NSMutableDictionary<NSString *, CBSDescriptor *> *> *gDescriptorsByCentral;
 static NSMutableDictionary<NSUUID *, NSSet<NSString *> *> *gAdvertisedServices;
 static NSMutableDictionary<NSString *, CBSChannel *> *gL2CAPChannels;
 static NSMutableDictionary<NSString *, dispatch_source_t> *gL2CAPReadSources;
@@ -81,7 +84,27 @@ static dispatch_queue_t cbs_callback_queue_for_peripheral(CBSPeripheral *periphe
 }
 
 static NSString *cbs_central_key(CBCentralManager *central) {
-    return [NSString stringWithFormat:@"%p", central];
+    NSString *key = objc_getAssociatedObject(central, kCBSCentralKeyKey);
+    if (!key) {
+        key = [NSString stringWithFormat:@"cbs_%llu", gNextCentralId++];
+        objc_setAssociatedObject(central, kCBSCentralKeyKey, key, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return key;
+}
+
+static void cbs_cleanup_central_stores(NSString *key) {
+    [gPeripheralsByCentral removeObjectForKey:key];
+    [gServicesByCentral removeObjectForKey:key];
+    [gCharacteristicsByCentral removeObjectForKey:key];
+    [gDescriptorsByCentral removeObjectForKey:key];
+
+    NSMutableArray<NSUUID *> *orphanedUUIDs = [NSMutableArray array];
+    for (NSUUID *uuid in gPeripheralOwners) {
+        if ([key isEqualToString:gPeripheralOwners[uuid]]) {
+            [orphanedUUIDs addObject:uuid];
+        }
+    }
+    [gPeripheralOwners removeObjectsForKeys:orphanedUUIDs];
 }
 
 static void cbs_register_central(CBCentralManager *central) {
@@ -94,8 +117,9 @@ static void cbs_register_central(CBCentralManager *central) {
     if (!gCentralByKey) {
         gCentralByKey = [NSMapTable strongToWeakObjectsMapTable];
     }
+    NSString *key = cbs_central_key(central);
     [gCentrals addObject:central];
-    [gCentralByKey setObject:central forKey:cbs_central_key(central)];
+    [gCentralByKey setObject:central forKey:key];
 }
 
 static CBCentralManager *cbs_owner_central_for_peripheral(NSUUID *identifier) {
@@ -107,6 +131,209 @@ static CBCentralManager *cbs_owner_central_for_peripheral(NSUUID *identifier) {
         return nil;
     }
     return [gCentralByKey objectForKey:ownerKey];
+}
+
+static NSMutableDictionary<NSUUID *, CBSPeripheral *> *cbs_peripheral_store_for_central_key(NSString *centralKey, BOOL create) {
+    if (![centralKey isKindOfClass:[NSString class]] || centralKey.length == 0) {
+        return nil;
+    }
+    if (!gPeripheralsByCentral && create) {
+        gPeripheralsByCentral = [NSMutableDictionary dictionary];
+    }
+    NSMutableDictionary<NSUUID *, CBSPeripheral *> *store = gPeripheralsByCentral[centralKey];
+    if (!store && create) {
+        store = [NSMutableDictionary dictionary];
+        gPeripheralsByCentral[centralKey] = store;
+    }
+    return store;
+}
+
+static NSMutableDictionary<NSUUID *, CBSPeripheral *> *cbs_peripheral_store_for_central(CBCentralManager *central, BOOL create) {
+    return cbs_peripheral_store_for_central_key(cbs_central_key(central), create);
+}
+
+static CBSPeripheral *cbs_peripheral_for_central(CBCentralManager *central, NSUUID *uuid, NSString *name, BOOL create) {
+    if (!central || !uuid) {
+        return nil;
+    }
+    NSMutableDictionary<NSUUID *, CBSPeripheral *> *store = cbs_peripheral_store_for_central(central, create);
+    CBSPeripheral *peripheral = store[uuid];
+    if (!peripheral && create) {
+        peripheral = [[CBSPeripheral alloc] initWithIdentifier:uuid name:(name ?: @"")];
+        store[uuid] = peripheral;
+        // Real CoreBluetooth shares a single CBPeripheral across CBCentralManagers.
+        // Mirror that by copying discovered state from any existing shim peripheral.
+        NSArray<CBSPeripheral *> *existing = cbs_all_peripherals_for_uuid(uuid);
+        for (CBSPeripheral *donor in existing) {
+            if (donor == peripheral) {
+                continue;
+            }
+            if (donor.services.count > 0) {
+                peripheral.services = donor.services;
+            }
+            if (donor.name.length > 0 && peripheral.name.length == 0) {
+                [peripheral cbs_updateName:donor.name];
+            }
+            if (donor.state != CBPeripheralStateDisconnected) {
+                [peripheral cbs_setState:donor.state];
+            }
+            if (peripheral.services.count > 0) {
+                break;
+            }
+        }
+    } else if (peripheral && [name isKindOfClass:[NSString class]] && name.length > 0) {
+        [peripheral cbs_updateName:name];
+    }
+    return peripheral;
+}
+
+static CBSPeripheral *cbs_owner_peripheral_for_uuid(NSUUID *uuid) {
+    CBCentralManager *owner = cbs_owner_central_for_peripheral(uuid);
+    if (!owner) {
+        return nil;
+    }
+    return cbs_peripheral_for_central(owner, uuid, nil, YES);
+}
+
+static NSArray<CBSPeripheral *> *cbs_all_peripherals_for_uuid(NSUUID *uuid) {
+    if (!uuid || !gPeripheralsByCentral) {
+        return @[];
+    }
+    NSMutableArray<CBSPeripheral *> *matches = [NSMutableArray array];
+    for (NSMutableDictionary<NSUUID *, CBSPeripheral *> *store in gPeripheralsByCentral.allValues) {
+        CBSPeripheral *peripheral = store[uuid];
+        if (peripheral) {
+            [matches addObject:peripheral];
+        }
+    }
+    return matches;
+}
+
+static CBSPeripheral *cbs_any_peripheral_for_uuid(NSUUID *uuid) {
+    NSArray<CBSPeripheral *> *matches = cbs_all_peripherals_for_uuid(uuid);
+    return matches.count > 0 ? matches.firstObject : nil;
+}
+
+static NSString *cbs_owner_key_for_peripheral_uuid(NSUUID *uuid) {
+    if (!uuid) {
+        return nil;
+    }
+    NSString *ownerKey = gPeripheralOwners[uuid];
+    if ([ownerKey isKindOfClass:[NSString class]] && ownerKey.length > 0) {
+        return ownerKey;
+    }
+    return nil;
+}
+
+static NSMutableDictionary<NSString *, CBSService *> *cbs_service_store_for_owner_key(NSString *ownerKey, BOOL create) {
+    if (![ownerKey isKindOfClass:[NSString class]] || ownerKey.length == 0) {
+        return nil;
+    }
+    if (!gServicesByCentral && create) {
+        gServicesByCentral = [NSMutableDictionary dictionary];
+    }
+    NSMutableDictionary<NSString *, CBSService *> *store = gServicesByCentral[ownerKey];
+    if (!store && create) {
+        store = [NSMutableDictionary dictionary];
+        gServicesByCentral[ownerKey] = store;
+    }
+    return store;
+}
+
+static NSMutableDictionary<NSString *, CBSCharacteristic *> *cbs_characteristic_store_for_owner_key(NSString *ownerKey, BOOL create) {
+    if (![ownerKey isKindOfClass:[NSString class]] || ownerKey.length == 0) {
+        return nil;
+    }
+    if (!gCharacteristicsByCentral && create) {
+        gCharacteristicsByCentral = [NSMutableDictionary dictionary];
+    }
+    NSMutableDictionary<NSString *, CBSCharacteristic *> *store = gCharacteristicsByCentral[ownerKey];
+    if (!store && create) {
+        store = [NSMutableDictionary dictionary];
+        gCharacteristicsByCentral[ownerKey] = store;
+    }
+    return store;
+}
+
+static NSMutableDictionary<NSString *, CBSDescriptor *> *cbs_descriptor_store_for_owner_key(NSString *ownerKey, BOOL create) {
+    if (![ownerKey isKindOfClass:[NSString class]] || ownerKey.length == 0) {
+        return nil;
+    }
+    if (!gDescriptorsByCentral && create) {
+        gDescriptorsByCentral = [NSMutableDictionary dictionary];
+    }
+    NSMutableDictionary<NSString *, CBSDescriptor *> *store = gDescriptorsByCentral[ownerKey];
+    if (!store && create) {
+        store = [NSMutableDictionary dictionary];
+        gDescriptorsByCentral[ownerKey] = store;
+    }
+    return store;
+}
+
+static CBSService *cbs_find_service(NSUUID *uuid, NSString *serviceId) {
+    if (!uuid || ![serviceId isKindOfClass:[NSString class]]) {
+        return nil;
+    }
+    NSString *ownerKey = cbs_owner_key_for_peripheral_uuid(uuid);
+    CBSService *service = cbs_service_store_for_owner_key(ownerKey, NO)[serviceId];
+    if (service) {
+        return service;
+    }
+    for (NSDictionary<NSString *, CBSService *> *store in gServicesByCentral.allValues) {
+        CBSService *candidate = store[serviceId];
+        if (!candidate) {
+            continue;
+        }
+        NSUUID *candidateUUID = candidate.peripheral.identifier;
+        if ([candidateUUID isKindOfClass:[NSUUID class]] && [candidateUUID isEqual:uuid]) {
+            return candidate;
+        }
+    }
+    return nil;
+}
+
+static CBSCharacteristic *cbs_find_characteristic(NSUUID *uuid, NSString *characteristicId) {
+    if (!uuid || ![characteristicId isKindOfClass:[NSString class]]) {
+        return nil;
+    }
+    NSString *ownerKey = cbs_owner_key_for_peripheral_uuid(uuid);
+    CBSCharacteristic *characteristic = cbs_characteristic_store_for_owner_key(ownerKey, NO)[characteristicId];
+    if (characteristic) {
+        return characteristic;
+    }
+    for (NSDictionary<NSString *, CBSCharacteristic *> *store in gCharacteristicsByCentral.allValues) {
+        CBSCharacteristic *candidate = store[characteristicId];
+        if (!candidate) {
+            continue;
+        }
+        NSUUID *candidateUUID = candidate.service.peripheral.identifier;
+        if ([candidateUUID isKindOfClass:[NSUUID class]] && [candidateUUID isEqual:uuid]) {
+            return candidate;
+        }
+    }
+    return nil;
+}
+
+static CBSDescriptor *cbs_find_descriptor(NSUUID *uuid, NSString *descriptorId) {
+    if (!uuid || ![descriptorId isKindOfClass:[NSString class]]) {
+        return nil;
+    }
+    NSString *ownerKey = cbs_owner_key_for_peripheral_uuid(uuid);
+    CBSDescriptor *descriptor = cbs_descriptor_store_for_owner_key(ownerKey, NO)[descriptorId];
+    if (descriptor) {
+        return descriptor;
+    }
+    for (NSDictionary<NSString *, CBSDescriptor *> *store in gDescriptorsByCentral.allValues) {
+        CBSDescriptor *candidate = store[descriptorId];
+        if (!candidate) {
+            continue;
+        }
+        NSUUID *candidateUUID = candidate.characteristic.service.peripheral.identifier;
+        if ([candidateUUID isKindOfClass:[NSUUID class]] && [candidateUUID isEqual:uuid]) {
+            return candidate;
+        }
+    }
+    return nil;
 }
 
 static BOOL cbs_is_scanning_for_central(CBCentralManager *central) {
@@ -221,6 +448,19 @@ static NSSet<NSString *> *cbs_advertisement_service_set(NSDictionary *adv) {
     return out;
 }
 
+static NSUInteger cbs_active_scanning_central_count(void) {
+    if (!gCentrals) {
+        return 0;
+    }
+    NSUInteger count = 0;
+    for (CBCentralManager *central in gCentrals.allObjects) {
+        if (central && cbs_is_scanning_for_central(central)) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
 static BOOL cbs_central_should_receive_discovery(CBCentralManager *central, CBSPeripheral *peripheral, NSDictionary *adv) {
     NSSet<NSString *> *wanted = cbs_scan_filter_for_central(central);
     if (wanted.count == 0) {
@@ -242,6 +482,21 @@ static BOOL cbs_central_should_receive_discovery(CBCentralManager *central, CBSP
             return YES;
         }
     }
+
+    // CoreBluetooth can report discoveries even when advertisement payloads do not
+    // contain service UUIDs we can inspect. In that ambiguous case, avoid starvation:
+    // if this is the only active scanner, pass it through;
+    // with multiple scanners, prefer broader filters (e.g. [FFF0, FFF1]) over narrow ones.
+    BOOL hasInspectableServiceInfo =
+        (advertised.count > 0) || (cachedAdvertised.count > 0) || (services.count > 0);
+    if (!hasInspectableServiceInfo) {
+        NSUInteger activeScanners = cbs_active_scanning_central_count();
+        if (activeScanners <= 1) {
+            return YES;
+        }
+        return wanted.count > 1;
+    }
+
     return NO;
 }
 
@@ -250,16 +505,26 @@ static NSDictionary *cbs_effective_scan_payload(void) {
         return nil;
     }
     BOOL hasScanningCentral = NO;
+    BOOL hasUnfilteredScanner = NO;
     NSMutableSet<NSString *> *services = [NSMutableSet set];
     BOOL allowDuplicates = NO;
     NSMutableSet<NSString *> *solicited = [NSMutableSet set];
+    NSMutableArray<NSString *> *activeScannerKeys = [NSMutableArray array];
 
     for (CBCentralManager *central in gCentrals.allObjects) {
         if (!central || !cbs_is_scanning_for_central(central)) {
             continue;
         }
         hasScanningCentral = YES;
-        [services unionSet:cbs_scan_filter_for_central(central)];
+        NSString *scannerKey = cbs_central_key(central);
+        if (scannerKey.length > 0) {
+            [activeScannerKeys addObject:scannerKey];
+        }
+        NSSet<NSString *> *filter = cbs_scan_filter_for_central(central);
+        if (filter.count == 0) {
+            hasUnfilteredScanner = YES;
+        }
+        [services unionSet:filter];
         NSDictionary *wireOptions = cbs_scan_wire_options_for_central(central);
         if ([wireOptions[CBCentralManagerScanOptionAllowDuplicatesKey] respondsToSelector:@selector(boolValue)] &&
             [wireOptions[CBCentralManagerScanOptionAllowDuplicatesKey] boolValue]) {
@@ -274,6 +539,7 @@ static NSDictionary *cbs_effective_scan_payload(void) {
     if (!hasScanningCentral) {
         return nil;
     }
+    NSArray<NSString *> *sortedScannerKeys = [activeScannerKeys sortedArrayUsingSelector:@selector(compare:)];
     NSMutableDictionary *options = [NSMutableDictionary dictionary];
     options[CBCentralManagerScanOptionAllowDuplicatesKey] = @(allowDuplicates);
     if (solicited.count > 0) {
@@ -281,11 +547,13 @@ static NSDictionary *cbs_effective_scan_payload(void) {
         options[CBCentralManagerScanOptionSolicitedServiceUUIDsKey] = sortedSolicited;
         options[@"solicitedServiceUUIDs"] = sortedSolicited;
     }
-    NSArray *sortedServices = [[services allObjects] sortedArrayUsingSelector:@selector(compare:)];
+    NSArray *sortedServices = hasUnfilteredScanner ? @[] : [[services allObjects] sortedArrayUsingSelector:@selector(compare:)];
     return @{
         @"type": @"scan",
         @"services": sortedServices,
-        @"options": options
+        @"options": options,
+        // Internal reconciliation metadata. Helper ignores unknown keys.
+        @"_scannerKeys": sortedScannerKeys
     };
 }
 
@@ -497,18 +765,8 @@ static void cbs_handle_message(NSDictionary *msg) {
         if (!uuid) {
             return;
         }
-        if (!gPeripherals) {
-            gPeripherals = [NSMutableDictionary dictionary];
-        }
         if (!gAdvertisedServices) {
             gAdvertisedServices = [NSMutableDictionary dictionary];
-        }
-        CBSPeripheral *peripheral = gPeripherals[uuid];
-        if (!peripheral) {
-            peripheral = [[CBSPeripheral alloc] initWithIdentifier:uuid name:name];
-            gPeripherals[uuid] = peripheral;
-        } else {
-            [peripheral cbs_updateName:name];
         }
         NSSet<NSString *> *serviceSet = cbs_advertisement_service_set(adv);
         if (serviceSet.count > 0) {
@@ -516,10 +774,13 @@ static void cbs_handle_message(NSDictionary *msg) {
         }
 
         NSArray<CBCentralManager *> *centrals = gCentrals ? gCentrals.allObjects : @[];
-        CBPeripheral *cbPeripheral = (CBPeripheral *)peripheral;
         BOOL delivered = NO;
         for (CBCentralManager *central in centrals) {
             if (!central || !cbs_is_scanning_for_central(central)) {
+                continue;
+            }
+            CBSPeripheral *peripheral = cbs_peripheral_for_central(central, uuid, name, YES);
+            if (!peripheral) {
                 continue;
             }
             if (!cbs_central_should_receive_discovery(central, peripheral, adv)) {
@@ -529,6 +790,7 @@ static void cbs_handle_message(NSDictionary *msg) {
             if (!delegate || ![delegate respondsToSelector:@selector(centralManager:didDiscoverPeripheral:advertisementData:RSSI:)]) {
                 continue;
             }
+            CBPeripheral *cbPeripheral = (CBPeripheral *)peripheral;
             dispatch_queue_t queue = cbs_callback_queue_for_central(central);
             dispatch_async(queue, ^{
                 [delegate centralManager:central
@@ -583,7 +845,7 @@ static void cbs_handle_message(NSDictionary *msg) {
                     continue;
                 }
                 NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:(NSString *)item];
-                CBSPeripheral *peripheral = uuid ? gPeripherals[uuid] : nil;
+                CBSPeripheral *peripheral = uuid ? cbs_peripheral_for_central(central, uuid, nil, YES) : nil;
                 if (peripheral) {
                     [restoredPeripherals addObject:(CBPeripheral *)peripheral];
                 }
@@ -632,20 +894,18 @@ static void cbs_handle_message(NSDictionary *msg) {
         if (!uuid) {
             return;
         }
-        CBSPeripheral *peripheral = gPeripherals[uuid];
-        if (!peripheral) {
-            return;
-        }
-        if ([type isEqualToString:@"didConnect"]) {
-            [peripheral cbs_setState:CBPeripheralStateConnected];
-        } else {
-            [peripheral cbs_setState:CBPeripheralStateDisconnected];
-        }
-
         CBCentralManager *central = cbs_owner_central_for_peripheral(uuid) ?: gCentral;
         id<CBCentralManagerDelegate> delegate = central.delegate;
         if (!central || !delegate) {
             return;
+        }
+        CBSPeripheral *peripheral = cbs_peripheral_for_central(central, uuid, nil, YES);
+        if (!peripheral) {
+            return;
+        }
+        CBPeripheralState newState = [type isEqualToString:@"didConnect"] ? CBPeripheralStateConnected : CBPeripheralStateDisconnected;
+        for (CBSPeripheral *p in cbs_all_peripherals_for_uuid(uuid)) {
+            [p cbs_setState:newState];
         }
         dispatch_queue_t queue = cbs_callback_queue_for_central(central);
         CBPeripheral *cbPeripheral = (CBPeripheral *)peripheral;
@@ -686,13 +946,13 @@ static void cbs_handle_message(NSDictionary *msg) {
             return;
         }
         NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidStr];
-        CBSPeripheral *peripheral = uuid ? gPeripherals[uuid] : nil;
-        if (!peripheral) {
-            return;
-        }
         CBCentralManager *central = cbs_owner_central_for_peripheral(uuid) ?: gCentral;
         id<CBCentralManagerDelegate> delegate = central.delegate;
         if (!central || !delegate) {
+            return;
+        }
+        CBSPeripheral *peripheral = cbs_peripheral_for_central(central, uuid, nil, YES);
+        if (!peripheral) {
             return;
         }
         if (![delegate respondsToSelector:@selector(centralManager:connectionEventDidOccur:forPeripheral:)]) {
@@ -714,19 +974,17 @@ static void cbs_handle_message(NSDictionary *msg) {
             return;
         }
         NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidStr];
-        CBSPeripheral *peripheral = uuid ? gPeripherals[uuid] : nil;
-        if (!peripheral) {
-            return;
+        for (CBSPeripheral *peripheral in cbs_all_peripherals_for_uuid(uuid)) {
+            [peripheral cbs_updateName:name];
+            id<CBPeripheralDelegate> delegate = peripheral.delegate;
+            if (!delegate || ![delegate respondsToSelector:@selector(peripheralDidUpdateName:)]) {
+                continue;
+            }
+            dispatch_queue_t queue = cbs_callback_queue_for_peripheral(peripheral);
+            dispatch_async(queue, ^{
+                [delegate peripheralDidUpdateName:(CBPeripheral *)peripheral];
+            });
         }
-        [peripheral cbs_updateName:name];
-        id<CBPeripheralDelegate> delegate = peripheral.delegate;
-        if (!delegate || ![delegate respondsToSelector:@selector(peripheralDidUpdateName:)]) {
-            return;
-        }
-        dispatch_queue_t queue = cbs_callback_queue_for_peripheral(peripheral);
-        dispatch_async(queue, ^{
-            [delegate peripheralDidUpdateName:(CBPeripheral *)peripheral];
-        });
         return;
     }
 
@@ -738,7 +996,7 @@ static void cbs_handle_message(NSDictionary *msg) {
             return;
         }
         NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidStr];
-        CBSPeripheral *peripheral = uuid ? gPeripherals[uuid] : nil;
+        CBSPeripheral *peripheral = cbs_owner_peripheral_for_uuid(uuid);
         if (!peripheral) {
             return;
         }
@@ -762,13 +1020,12 @@ static void cbs_handle_message(NSDictionary *msg) {
             return;
         }
         NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidStr];
-        CBSPeripheral *peripheral = uuid ? gPeripherals[uuid] : nil;
+        CBSPeripheral *peripheral = cbs_owner_peripheral_for_uuid(uuid);
         if (!peripheral) {
             return;
         }
-        if (!gServices) {
-            gServices = [NSMutableDictionary dictionary];
-        }
+        NSString *ownerKey = cbs_owner_key_for_peripheral_uuid(uuid) ?: cbs_central_key(gCentral);
+        NSMutableDictionary<NSString *, CBSService *> *serviceStore = cbs_service_store_for_owner_key(ownerKey, YES);
         NSMutableArray *svcList = [NSMutableArray array];
         for (NSDictionary *svc in services) {
             if (![svc isKindOfClass:[NSDictionary class]]) {
@@ -782,10 +1039,15 @@ static void cbs_handle_message(NSDictionary *msg) {
             }
             CBUUID *uuidObj = [CBUUID UUIDWithString:svcUuid];
             CBSService *service = [[CBSService alloc] initWithId:svcId uuid:uuidObj primary:primary.boolValue peripheral:peripheral];
-            gServices[svcId] = service;
+            serviceStore[svcId] = service;
             [svcList addObject:service];
         }
         peripheral.services = svcList;
+        for (CBSPeripheral *p in cbs_all_peripherals_for_uuid(uuid)) {
+            if (p != peripheral) {
+                p.services = svcList;
+            }
+        }
         id<CBPeripheralDelegate> delegate = peripheral.delegate;
         if (!delegate || ![delegate respondsToSelector:@selector(peripheral:didDiscoverServices:)]) {
             return;
@@ -809,14 +1071,13 @@ static void cbs_handle_message(NSDictionary *msg) {
             return;
         }
         NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidStr];
-        CBSPeripheral *peripheral = uuid ? gPeripherals[uuid] : nil;
-        CBSService *service = gServices[serviceId];
+        CBSPeripheral *peripheral = cbs_owner_peripheral_for_uuid(uuid);
+        CBSService *service = cbs_find_service(uuid, serviceId);
         if (!peripheral || !service) {
             return;
         }
-        if (!gServices) {
-            gServices = [NSMutableDictionary dictionary];
-        }
+        NSString *ownerKey = cbs_owner_key_for_peripheral_uuid(uuid) ?: cbs_central_key(gCentral);
+        NSMutableDictionary<NSString *, CBSService *> *serviceStore = cbs_service_store_for_owner_key(ownerKey, YES);
         NSMutableArray *includedList = [NSMutableArray array];
         for (NSDictionary *svc in includedServices) {
             if (![svc isKindOfClass:[NSDictionary class]]) {
@@ -830,7 +1091,7 @@ static void cbs_handle_message(NSDictionary *msg) {
             }
             CBUUID *uuidObj = [CBUUID UUIDWithString:incUuid];
             CBSService *included = [[CBSService alloc] initWithId:incId uuid:uuidObj primary:primary.boolValue peripheral:peripheral];
-            gServices[incId] = included;
+            serviceStore[incId] = included;
             [includedList addObject:included];
         }
         [service cbs_setIncludedServices:includedList];
@@ -855,14 +1116,13 @@ static void cbs_handle_message(NSDictionary *msg) {
             return;
         }
         NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidStr];
-        CBSPeripheral *peripheral = uuid ? gPeripherals[uuid] : nil;
-        CBSService *service = gServices[serviceId];
+        CBSPeripheral *peripheral = cbs_owner_peripheral_for_uuid(uuid);
+        CBSService *service = cbs_find_service(uuid, serviceId);
         if (!peripheral || !service) {
             return;
         }
-        if (!gCharacteristics) {
-            gCharacteristics = [NSMutableDictionary dictionary];
-        }
+        NSString *ownerKey = cbs_owner_key_for_peripheral_uuid(uuid) ?: cbs_central_key(gCentral);
+        NSMutableDictionary<NSString *, CBSCharacteristic *> *characteristicStore = cbs_characteristic_store_for_owner_key(ownerKey, YES);
         NSMutableArray *chrList = [NSMutableArray array];
         for (NSDictionary *ch in chars) {
             if (![ch isKindOfClass:[NSDictionary class]]) {
@@ -876,7 +1136,7 @@ static void cbs_handle_message(NSDictionary *msg) {
             }
             CBUUID *uuidObj = [CBUUID UUIDWithString:chUuid];
             CBSCharacteristic *chr = [[CBSCharacteristic alloc] initWithId:chId uuid:uuidObj properties:props.unsignedIntegerValue service:service];
-            gCharacteristics[chId] = chr;
+            characteristicStore[chId] = chr;
             [chrList addObject:chr];
         }
         [service cbs_setCharacteristics:chrList];
@@ -903,14 +1163,13 @@ static void cbs_handle_message(NSDictionary *msg) {
             return;
         }
         NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidStr];
-        CBSPeripheral *peripheral = uuid ? gPeripherals[uuid] : nil;
-        CBSCharacteristic *characteristic = gCharacteristics[characteristicId];
+        CBSPeripheral *peripheral = cbs_owner_peripheral_for_uuid(uuid);
+        CBSCharacteristic *characteristic = cbs_find_characteristic(uuid, characteristicId);
         if (!peripheral || !characteristic) {
             return;
         }
-        if (!gDescriptors) {
-            gDescriptors = [NSMutableDictionary dictionary];
-        }
+        NSString *ownerKey = cbs_owner_key_for_peripheral_uuid(uuid) ?: cbs_central_key(gCentral);
+        NSMutableDictionary<NSString *, CBSDescriptor *> *descriptorStore = cbs_descriptor_store_for_owner_key(ownerKey, YES);
         NSMutableArray *descriptorList = [NSMutableArray array];
         for (NSDictionary *desc in descriptors) {
             if (![desc isKindOfClass:[NSDictionary class]]) {
@@ -923,7 +1182,7 @@ static void cbs_handle_message(NSDictionary *msg) {
             }
             CBUUID *uuidObj = [CBUUID UUIDWithString:descUuid];
             CBSDescriptor *descriptor = [[CBSDescriptor alloc] initWithId:descId uuid:uuidObj characteristic:characteristic];
-            gDescriptors[descId] = descriptor;
+            descriptorStore[descId] = descriptor;
             [descriptorList addObject:descriptor];
         }
         [characteristic cbs_setDescriptors:descriptorList];
@@ -948,8 +1207,8 @@ static void cbs_handle_message(NSDictionary *msg) {
             return;
         }
         NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidStr];
-        CBSPeripheral *peripheral = uuid ? gPeripherals[uuid] : nil;
-        CBSCharacteristic *chr = gCharacteristics[chId];
+        CBSPeripheral *peripheral = cbs_owner_peripheral_for_uuid(uuid);
+        CBSCharacteristic *chr = cbs_find_characteristic(uuid, chId);
         if (!peripheral || !chr) {
             return;
         }
@@ -978,8 +1237,8 @@ static void cbs_handle_message(NSDictionary *msg) {
             return;
         }
         NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidStr];
-        CBSPeripheral *peripheral = uuid ? gPeripherals[uuid] : nil;
-        CBSCharacteristic *chr = gCharacteristics[chId];
+        CBSPeripheral *peripheral = cbs_owner_peripheral_for_uuid(uuid);
+        CBSCharacteristic *chr = cbs_find_characteristic(uuid, chId);
         if (!peripheral || !chr) {
             return;
         }
@@ -1003,8 +1262,8 @@ static void cbs_handle_message(NSDictionary *msg) {
             return;
         }
         NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidStr];
-        CBSPeripheral *peripheral = uuid ? gPeripherals[uuid] : nil;
-        CBSDescriptor *descriptor = gDescriptors[descriptorId];
+        CBSPeripheral *peripheral = cbs_owner_peripheral_for_uuid(uuid);
+        CBSDescriptor *descriptor = cbs_find_descriptor(uuid, descriptorId);
         if (!peripheral || !descriptor) {
             return;
         }
@@ -1029,8 +1288,8 @@ static void cbs_handle_message(NSDictionary *msg) {
             return;
         }
         NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidStr];
-        CBSPeripheral *peripheral = uuid ? gPeripherals[uuid] : nil;
-        CBSDescriptor *descriptor = gDescriptors[descriptorId];
+        CBSPeripheral *peripheral = cbs_owner_peripheral_for_uuid(uuid);
+        CBSDescriptor *descriptor = cbs_find_descriptor(uuid, descriptorId);
         if (!peripheral || !descriptor) {
             return;
         }
@@ -1055,8 +1314,8 @@ static void cbs_handle_message(NSDictionary *msg) {
             return;
         }
         NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidStr];
-        CBSPeripheral *peripheral = uuid ? gPeripherals[uuid] : nil;
-        CBSCharacteristic *chr = gCharacteristics[chId];
+        CBSPeripheral *peripheral = cbs_owner_peripheral_for_uuid(uuid);
+        CBSCharacteristic *chr = cbs_find_characteristic(uuid, chId);
         if (!peripheral || !chr) {
             return;
         }
@@ -1082,7 +1341,7 @@ static void cbs_handle_message(NSDictionary *msg) {
             return;
         }
         NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidStr];
-        CBSPeripheral *peripheral = uuid ? gPeripherals[uuid] : nil;
+        CBSPeripheral *peripheral = cbs_owner_peripheral_for_uuid(uuid);
         if (!peripheral) {
             return;
         }
@@ -1137,7 +1396,7 @@ static void cbs_handle_message(NSDictionary *msg) {
             return;
         }
         NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidStr];
-        CBSPeripheral *peripheral = uuid ? gPeripherals[uuid] : nil;
+        CBSPeripheral *peripheral = cbs_owner_peripheral_for_uuid(uuid);
         if (!peripheral) {
             return;
         }
@@ -1146,7 +1405,7 @@ static void cbs_handle_message(NSDictionary *msg) {
             if (![serviceId isKindOfClass:[NSString class]]) {
                 continue;
             }
-            CBSService *service = gServices[(NSString *)serviceId];
+            CBSService *service = cbs_find_service(uuid, (NSString *)serviceId);
             if (service) {
                 [services addObject:service];
             }
@@ -1168,7 +1427,7 @@ static void cbs_handle_message(NSDictionary *msg) {
             return;
         }
         NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidStr];
-        CBSPeripheral *peripheral = uuid ? gPeripherals[uuid] : nil;
+        CBSPeripheral *peripheral = cbs_owner_peripheral_for_uuid(uuid);
         if (!peripheral) {
             return;
         }
@@ -1400,7 +1659,10 @@ static void cbs_cancel(id self, SEL _cmd, id peripheral) {
         if (!gPeripheralOwners) {
             gPeripheralOwners = [NSMutableDictionary dictionary];
         }
-        gPeripheralOwners[uuid] = cbs_central_key(central);
+        CBCentralManager *existingOwner = cbs_owner_central_for_peripheral(uuid);
+        if (!existingOwner || existingOwner == central) {
+            gPeripheralOwners[uuid] = cbs_central_key(central);
+        }
         CBSConnectionSend(@{@"type": @"cancel", @"id": uuid.UUIDString});
     }
 }
@@ -1408,6 +1670,21 @@ static void cbs_cancel(id self, SEL _cmd, id peripheral) {
 static BOOL (*orig_is_scanning)(id, SEL);
 static BOOL cbs_is_scanning(id self, SEL _cmd) {
     return cbs_is_scanning_for_central((CBCentralManager *)self);
+}
+
+static void (*orig_dealloc)(id, SEL);
+static void cbs_dealloc(id self, SEL _cmd) {
+    NSString *key = objc_getAssociatedObject(self, kCBSCentralKeyKey);
+    if (key) {
+        cbs_cleanup_central_stores(key);
+        [gCentralByKey removeObjectForKey:key];
+    }
+    if (gCentral == self) {
+        gCentral = nil;
+    }
+    if (orig_dealloc) {
+        orig_dealloc(self, _cmd);
+    }
 }
 
 static void (*orig_register_for_connection_events)(id, SEL, NSDictionary *);
@@ -1422,15 +1699,35 @@ static void cbs_register_for_connection_events(id self, SEL _cmd, NSDictionary *
 
 static NSArray *(*orig_retrieve_connected)(id, SEL, NSArray *);
 static NSArray *cbs_retrieve_connected(id self, SEL _cmd, NSArray *services) {
-    gCentral = self;
+    CBCentralManager *central = (CBCentralManager *)self;
+    gCentral = central;
     NSSet<NSString *> *wantedServices = cbs_normalized_uuid_string_set(services);
     NSMutableArray *matches = [NSMutableArray array];
-    for (CBSPeripheral *peripheral in gPeripherals.allValues) {
-        if ([peripheral state] != CBPeripheralStateConnected) {
-            continue;
-        }
-        if (cbs_peripheral_matches_service_filter(peripheral, wantedServices)) {
-            [matches addObject:(CBPeripheral *)peripheral];
+    NSMutableDictionary<NSUUID *, CBSPeripheral *> *requestStore = cbs_peripheral_store_for_central(central, YES);
+    NSMutableSet<NSUUID *> *seen = [NSMutableSet set];
+    for (NSDictionary<NSUUID *, CBSPeripheral *> *store in gPeripheralsByCentral.allValues) {
+        for (CBSPeripheral *source in store.allValues) {
+            if ([source state] != CBPeripheralStateConnected) {
+                continue;
+            }
+            NSUUID *uuid = source.identifier;
+            if (!uuid || [seen containsObject:uuid]) {
+                continue;
+            }
+            if (!cbs_peripheral_matches_service_filter(source, wantedServices)) {
+                continue;
+            }
+            CBSPeripheral *target = requestStore[uuid];
+            if (!target) {
+                target = [[CBSPeripheral alloc] initWithIdentifier:uuid name:source.name ?: @""];
+                requestStore[uuid] = target;
+            } else if (source.name.length > 0) {
+                [target cbs_updateName:source.name];
+            }
+            [target cbs_setState:CBPeripheralStateConnected];
+            target.services = source.services ?: @[];
+            [matches addObject:(CBPeripheral *)target];
+            [seen addObject:uuid];
         }
     }
     return matches;
@@ -1438,15 +1735,26 @@ static NSArray *cbs_retrieve_connected(id self, SEL _cmd, NSArray *services) {
 
 static NSArray *(*orig_retrieve_peripherals)(id, SEL, NSArray *);
 static NSArray *cbs_retrieve_peripherals(id self, SEL _cmd, NSArray *identifiers) {
-    gCentral = self;
+    CBCentralManager *central = (CBCentralManager *)self;
+    gCentral = central;
     NSMutableArray *matches = [NSMutableArray array];
+    NSMutableDictionary<NSUUID *, CBSPeripheral *> *store = cbs_peripheral_store_for_central(central, YES);
     if ([identifiers isKindOfClass:[NSArray class]]) {
         for (id item in identifiers) {
             NSUUID *uuid = [item isKindOfClass:[NSUUID class]] ? (NSUUID *)item : nil;
             if (!uuid) {
                 continue;
             }
-            CBSPeripheral *peripheral = gPeripherals[uuid];
+            CBSPeripheral *peripheral = store[uuid];
+            if (!peripheral) {
+                CBSPeripheral *source = cbs_any_peripheral_for_uuid(uuid);
+                if (source) {
+                    peripheral = [[CBSPeripheral alloc] initWithIdentifier:uuid name:source.name ?: @""];
+                    [peripheral cbs_setState:source.state];
+                    peripheral.services = source.services ?: @[];
+                    store[uuid] = peripheral;
+                }
+            }
             if (peripheral) {
                 [matches addObject:(CBPeripheral *)peripheral];
             }
@@ -1519,6 +1827,7 @@ static void cbs_swizzle_class(Class cls, SEL sel, IMP imp, IMP *orig_out) {
     cbs_swizzle(cls, @selector(registerForConnectionEventsWithOptions:), (IMP)cbs_register_for_connection_events, (IMP *)&orig_register_for_connection_events);
     cbs_swizzle(cls, @selector(retrieveConnectedPeripheralsWithServices:), (IMP)cbs_retrieve_connected, (IMP *)&orig_retrieve_connected);
     cbs_swizzle(cls, @selector(retrievePeripheralsWithIdentifiers:), (IMP)cbs_retrieve_peripherals, (IMP *)&orig_retrieve_peripherals);
+    cbs_swizzle(cls, NSSelectorFromString(@"dealloc"), (IMP)cbs_dealloc, (IMP *)&orig_dealloc);
 
     Class mgr = NSClassFromString(@"CBManager");
     if (mgr) {

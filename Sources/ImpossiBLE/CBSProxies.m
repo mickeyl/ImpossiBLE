@@ -24,22 +24,30 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
 @implementation CBSPeripheral {
     NSUUID *_shimIdentifier;
     NSString *_shimName;
+    id<CBPeripheralDelegate> _shimDelegate;
     CBPeripheralState _shimState;
+    NSArray *_shimServices;
 }
 
 - (instancetype)initWithIdentifier:(NSUUID *)identifier name:(NSString *)name {
-    self = [super init];
+    self = cbs_super_init(self, [CBPeripheral class]);
     if (self) {
         _shimIdentifier = identifier;
         _shimName = [name copy];
+        _shimDelegate = nil;
         _shimState = CBPeripheralStateDisconnected;
+        _shimServices = @[];
     }
     return self;
 }
 
 - (NSUUID *)identifier { return _shimIdentifier; }
 - (NSString *)name { return _shimName; }
+- (id<CBPeripheralDelegate>)delegate { return _shimDelegate; }
+- (void)setDelegate:(id<CBPeripheralDelegate>)delegate { _shimDelegate = delegate; }
 - (CBPeripheralState)state { return _shimState; }
+- (NSArray *)services { return _shimServices; }
+- (void)setServices:(NSArray *)services { _shimServices = [services copy] ?: @[]; }
 
 - (void)cbs_updateName:(NSString *)name {
     _shimName = [name copy];
@@ -177,6 +185,16 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
     return NO;
 }
 
+- (BOOL)isEqual:(id)object {
+    if (self == object) return YES;
+    if (![object isKindOfClass:[CBSPeripheral class]]) return NO;
+    return [_shimIdentifier isEqual:((CBSPeripheral *)object)->_shimIdentifier];
+}
+
+- (NSUInteger)hash {
+    return _shimIdentifier.hash;
+}
+
 @end
 
 #pragma mark - CBSService (subclass of CBService)
@@ -212,6 +230,16 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
 - (NSArray *)characteristics { return _shimCharacteristics; }
 - (void)cbs_setIncludedServices:(NSArray *)includedServices { _shimIncludedServices = [includedServices copy]; }
 - (void)cbs_setCharacteristics:(NSArray *)characteristics { _shimCharacteristics = [characteristics copy]; }
+
+- (BOOL)isEqual:(id)object {
+    if (self == object) return YES;
+    if (![object isKindOfClass:[CBSService class]]) return NO;
+    return [_shimId isEqual:((CBSService *)object)->_shimId];
+}
+
+- (NSUInteger)hash {
+    return _shimId.hash;
+}
 
 @end
 
@@ -255,6 +283,16 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
 - (void)cbs_setNotifying:(BOOL)notifying { _shimNotifying = notifying; }
 - (void)cbs_setDescriptors:(NSArray *)descriptors { _shimDescriptors = [descriptors copy]; }
 
+- (BOOL)isEqual:(id)object {
+    if (self == object) return YES;
+    if (![object isKindOfClass:[CBSCharacteristic class]]) return NO;
+    return [_shimId isEqual:((CBSCharacteristic *)object)->_shimId];
+}
+
+- (NSUInteger)hash {
+    return _shimId.hash;
+}
+
 @end
 
 #pragma mark - CBSDescriptor (subclass of CBDescriptor)
@@ -282,6 +320,16 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
 - (CBCharacteristic *)characteristic { return (CBCharacteristic *)_shimCharacteristic; }
 - (id)value { return _shimValue; }
 - (void)cbs_setValue:(id)value { _shimValue = value; }
+
+- (BOOL)isEqual:(id)object {
+    if (self == object) return YES;
+    if (![object isKindOfClass:[CBSDescriptor class]]) return NO;
+    return [_shimId isEqual:((CBSDescriptor *)object)->_shimId];
+}
+
+- (NSUInteger)hash {
+    return _shimId.hash;
+}
 
 @end
 

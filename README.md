@@ -25,18 +25,21 @@ Your app code remains unchanged -- `CBCentralManager`, `CBPeripheral`, delegate 
 ### Under the Hood (Technical Details)
 
 - **Method swizzling on the simulator**: the library swizzles `CBCentralManager` init/state/scan/connect APIs and routes them to a local transport.
-- **Proxy CoreBluetooth objects**: it creates shim `CBPeripheral`, `CBService`, `CBCharacteristic`, and `CBL2CAPChannel` objects so your app sees real types.
+- **Multi-central multiplexing**: multiple `CBCentralManager` instances in the same app work independently, each with its own peripheral store, scan filters, and delegate callbacks -- matching real CoreBluetooth behavior where peripherals and their discovered services are shared across managers.
+- **Proxy CoreBluetooth objects**: it creates shim `CBPeripheral`, `CBService`, `CBCharacteristic`, `CBDescriptor`, and `CBL2CAPChannel` objects so your app sees real types.
 - **Transport**: newline-delimited JSON over a Unix domain socket (`/tmp/impossible.sock`).
 - **Data encoding**: characteristic values and L2CAP payloads are base64-encoded across the wire.
+- **Service filter fidelity**: the helper enforces `discoverServices:` filters to match iOS behavior, even though macOS CoreBluetooth returns all cached services.
 - **Callback fidelity**: delegate callbacks are dispatched back onto the original `CBCentralManager` delegate queue.
 
 ## Features
 
+- Multiple `CBCentralManager` instances with independent scan/connect lifecycles
 - Scan for peripherals with service filters
 - Connect and disconnect
-- Discover services and characteristics
+- Discover services, characteristics, and descriptors
 - Read, write (with/without response), and notify
-- L2CAP channel support
+- L2CAP channel support (with timeout handling)
 - Automatic `+load` activation -- no setup code required
 
 ## Requirements
@@ -84,7 +87,7 @@ That is all. The library activates automatically via `+load` on simulator builds
 ## Limitations
 
 - **Central role only** -- peripheral/broadcaster mode is not supported.
-- **Single client** -- only one simulator app can connect to the helper at a time. A new client connection replaces the existing one; the previous client is dropped and the helper tears down scans, connections, and L2CAP channels. The new client does not receive an explicit "busy" error.
+- **Single simulator app** -- only one simulator app can connect to the helper at a time. A new client connection replaces the existing one; the previous client is dropped and the helper tears down scans, connections, and L2CAP channels. Multiple `CBCentralManager` instances within a single app are fully supported.
 - **Helper must be running** -- start it before launching your app in the simulator.
 
 ## Roadmap to 1.0 (Goal: 100% CoreBluetooth Coverage)
@@ -93,7 +96,7 @@ The goal is full CoreBluetooth API coverage in the simulator. Real-device testin
 
 - [ ] **Peripheral role support** (advertising, GATT server, write/notify from the peripheral side).
 - [ ] **Multiple simulator clients** (concurrent apps connecting to the helper).
-- [ ] **Full descriptor support** (discover/read/write descriptors beyond characteristics).
+- [x] **Full descriptor support** (discover/read/write descriptors beyond characteristics).
 - [ ] **Improved state/authorization fidelity** (authorization states, feature gating, and error codes matching device behavior).
 - [ ] **State restoration parity** (`CBCentralManager` restoration flows).
 - [ ] **Pairing / security flows** (bonding, encryption-required characteristics, and relevant errors).

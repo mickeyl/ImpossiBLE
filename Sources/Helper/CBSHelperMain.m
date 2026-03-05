@@ -20,6 +20,8 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, CBDescriptor *> *descriptorsById;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, CBL2CAPChannel *> *l2capById;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *streamToL2capId;
+@property(nonatomic, strong) NSMutableDictionary<NSUUID *, dispatch_source_t> *pendingL2capOpenTimers;
+@property(nonatomic, strong) NSMutableDictionary<NSUUID *, NSSet<CBUUID *> *> *pendingServiceFilters;
 @property(nonatomic, strong) NSArray<CBUUID *> *pendingServices;
 @property(nonatomic, strong) NSDictionary *pendingOptions;
 @property(nonatomic, strong) NSMutableSet<NSUUID *> *seenScanPeripherals;
@@ -41,6 +43,8 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
         _descriptorsById = [NSMutableDictionary dictionary];
         _l2capById = [NSMutableDictionary dictionary];
         _streamToL2capId = [NSMutableDictionary dictionary];
+        _pendingL2capOpenTimers = [NSMutableDictionary dictionary];
+        _pendingServiceFilters = [NSMutableDictionary dictionary];
         _seenScanPeripherals = [NSMutableSet set];
         _scanShouldDeduplicate = YES;
         _clientFd = -1;
@@ -183,6 +187,10 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
     [self.descriptorsById removeAllObjects];
     [self.l2capById removeAllObjects];
     [self.streamToL2capId removeAllObjects];
+    for (dispatch_source_t timer in [self.pendingL2capOpenTimers allValues]) {
+        dispatch_source_cancel(timer);
+    }
+    [self.pendingL2capOpenTimers removeAllObjects];
     [self.seenScanPeripherals removeAllObjects];
     self.scanShouldDeduplicate = YES;
     self.pendingServices = nil;
@@ -205,6 +213,60 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
             [channel.outputStream close];
         }
     });
+}
+
+- (void)cancelPendingL2capOpenForPeripheralId:(NSUUID *)peripheralId {
+    if (!peripheralId) {
+        return;
+    }
+    dispatch_source_t timer = self.pendingL2capOpenTimers[peripheralId];
+    if (!timer) {
+        return;
+    }
+    [self.pendingL2capOpenTimers removeObjectForKey:peripheralId];
+    dispatch_source_cancel(timer);
+}
+
+- (void)schedulePendingL2capOpenTimeoutForPeripheral:(CBPeripheral *)peripheral psm:(CBL2CAPPSM)psm {
+    NSUUID *peripheralId = peripheral.identifier;
+    if (!peripheralId) {
+        return;
+    }
+    [self cancelPendingL2capOpenForPeripheralId:peripheralId];
+
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, self.cbQueue);
+    if (!timer) {
+        return;
+    }
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_source_set_timer(
+        timer,
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
+        DISPATCH_TIME_FOREVER,
+        (uint64_t)(100 * NSEC_PER_MSEC)
+    );
+    dispatch_source_set_event_handler(timer, ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
+        }
+        dispatch_source_t activeTimer = strongSelf.pendingL2capOpenTimers[peripheralId];
+        if (activeTimer != timer) {
+            return;
+        }
+        [strongSelf.pendingL2capOpenTimers removeObjectForKey:peripheralId];
+        dispatch_source_cancel(timer);
+        [strongSelf sendMessage:@{
+            @"type": @"didOpenL2CAP",
+            @"id": peripheralId.UUIDString,
+            @"channelId": @"",
+            @"psm": @(psm),
+            @"error": @"Timeout opening L2CAP channel"
+        }];
+    });
+    self.pendingL2capOpenTimers[peripheralId] = timer;
+    dispatch_resume(timer);
 }
 
 - (void)handleMessageLine:(NSData *)line {
@@ -345,6 +407,11 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
                     }
                 }
             }
+        }
+        if (uuids.count > 0) {
+            self.pendingServiceFilters[uuid] = [NSSet setWithArray:uuids];
+        } else {
+            [self.pendingServiceFilters removeObjectForKey:uuid];
         }
         dispatch_async(self.cbQueue, ^{
             peripheral.delegate = self;
@@ -533,7 +600,9 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
         }
         dispatch_async(self.cbQueue, ^{
             peripheral.delegate = self;
-            [peripheral openL2CAPChannel:(CBL2CAPPSM)psmNum.unsignedShortValue];
+            CBL2CAPPSM psm = (CBL2CAPPSM)psmNum.unsignedShortValue;
+            [self schedulePendingL2capOpenTimeoutForPeripheral:peripheral psm:psm];
+            [peripheral openL2CAPChannel:psm];
         });
         return;
     }
@@ -900,6 +969,7 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
 }
 
 - (void)centralManager:(CBCentralManager *)central didDisconnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error {
+    [self cancelPendingL2capOpenForPeripheralId:peripheral.identifier];
     [self sendDisconnectForPeripheral:peripheral
                             timestamp:CFAbsoluteTimeGetCurrent()
                        isReconnecting:NO
@@ -911,6 +981,7 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
               timestamp:(CFAbsoluteTime)timestamp
          isReconnecting:(BOOL)isReconnecting
                   error:(NSError *)error API_AVAILABLE(ios(17.0), macos(14.0)) {
+    [self cancelPendingL2capOpenForPeripheralId:peripheral.identifier];
     [self sendDisconnectForPeripheral:peripheral
                             timestamp:timestamp
                        isReconnecting:isReconnecting
@@ -938,6 +1009,19 @@ connectionEventDidOccur:(CBConnectionEvent)event
     }
     NSMutableArray *servicesPayload = [NSMutableArray array];
     NSArray<CBService *> *services = peripheral.services ?: @[];
+    // macOS CoreBluetooth may return ALL cached services even when a filtered
+    // discoverServices: was requested.  iOS only returns the requested subset.
+    // Mirror iOS behavior so the shim client sees the correct service list.
+    NSSet<CBUUID *> *filter = self.pendingServiceFilters[peripheral.identifier];
+    if (filter.count > 0) {
+        NSMutableArray<CBService *> *filtered = [NSMutableArray array];
+        for (CBService *svc in services) {
+            if ([filter containsObject:svc.UUID]) {
+                [filtered addObject:svc];
+            }
+        }
+        services = filtered;
+    }
     [services enumerateObjectsUsingBlock:^(CBService *svc, NSUInteger idx, BOOL *stop) {
         NSString *svcId = [self serviceIdForPeripheral:peripheral service:svc index:idx];
         objc_setAssociatedObject(svc, kCBSServiceIdKey, svcId, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1155,6 +1239,7 @@ connectionEventDidOccur:(CBConnectionEvent)event
     if (!peripheral.identifier) {
         return;
     }
+    [self cancelPendingL2capOpenForPeripheralId:peripheral.identifier];
     NSString *errStr = error ? [error localizedDescription] : @"";
     if (error || !channel) {
         [self sendMessage:@{

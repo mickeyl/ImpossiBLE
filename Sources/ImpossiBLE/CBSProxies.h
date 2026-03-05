@@ -5,12 +5,12 @@
 @class CBSCharacteristic;
 @class CBSDescriptor;
 
-@interface CBSPeripheral : NSObject
+@interface CBSPeripheral : CBPeripheral
 @property(nonatomic, readonly) NSUUID *identifier;
-@property(nonatomic, readonly, copy) NSString *name;
+@property(nonatomic, readonly) NSString *name;
 @property(nonatomic, weak) id<CBPeripheralDelegate> delegate;
 @property(nonatomic, readonly) CBPeripheralState state;
-@property(nonatomic, copy) NSArray *services;
+@property(nonatomic, retain) NSArray *services;
 - (instancetype)initWithIdentifier:(NSUUID *)identifier name:(NSString *)name;
 - (void)cbs_updateName:(NSString *)name;
 - (void)cbs_setState:(CBPeripheralState)state;
