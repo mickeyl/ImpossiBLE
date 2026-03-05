@@ -1,0 +1,103 @@
+ImpossiBLE ChangeLog
+====================
+
+0.5 (2026-03-05)
+-----------------
+
+Multi-central multiplexing and iOS service-filter fidelity.
+
+* Multiple CBCentralManager instances within a single app now work
+  independently, each with its own peripheral, service, characteristic,
+  and descriptor store — matching real CoreBluetooth behavior.
+* Peripheral state sharing across managers: discovered services, name,
+  and connection state are propagated to all CBSPeripheral instances
+  for the same device UUID, emulating CoreBluetooth's shared peripheral
+  objects.
+* Service filter enforcement in the helper: discoverServices: UUID
+  filters are now tracked and applied to results, fixing a platform
+  difference where macOS CoreBluetooth returns all cached services
+  regardless of the filter (iOS returns only the requested subset).
+* Per-central scan-state tracking with independent service filters and
+  scan options.
+* retrievePeripherals: and retrieveConnectedPeripherals: swizzles that
+  query across all central stores.
+* L2CAP open timeout: 10-second dispatch timer fires an error callback
+  if didOpenL2CAPChannel: never arrives.
+* Debug -description overrides on CBSPeripheral, CBSService,
+  CBSCharacteristic, and CBSDescriptor for improved logging.
+* Helper now logs peripheral name alongside identifier in
+  connect/disconnect events.
+
+0.4 (2026-02-20)
+-----------------
+
+Homebrew path fix.
+
+* Fix helper app path resolution when installed via Homebrew, where the
+  impossible-helper CLI wrapper could not locate the .app bundle inside
+  the Homebrew Cellar/libexec layout.
+
+0.3 (2026-02-12)
+-----------------
+
+CLI wrapper and installation improvements.
+
+* Add impossible-helper CLI wrapper with start/stop/restart/status
+  subcommands and install/uninstall for auto-start at login via
+  LaunchAgent (launchctl integration).
+* Makefile: support configurable install prefix (PREFIX variable)
+  for flexible installation paths.
+
+0.2 (2026-02-03)
+-----------------
+
+Expanded CoreBluetooth coverage, descriptor support, and runtime
+hardening. First tagged release.
+
+* Full descriptor support: discover, read, and write descriptors
+  (CBSDescriptor proxy, helper-side descriptor ID mapping and value
+  serialization).
+* Included service discovery (discoverIncludedServices:forService:).
+* RSSI reading (readRSSI / didReadRSSI:error:).
+* Scan deduplication and per-central scan filter logic.
+* Advertisement data decoding and service UUID extraction.
+* Connection event registration (registerForConnectionEvents:).
+* retrievePeripherals: and retrieveConnectedPeripherals: stubs.
+* Additional peripheral properties: ancsAuthorized,
+  canSendWriteWithoutResponse, maximumWriteValueLengthForType:.
+* Helper-side delegate coverage: didDiscoverIncludedServicesForService:,
+  didDiscoverDescriptorsForCharacteristic:, didUpdateValueForDescriptor:,
+  didWriteValueForDescriptor:, didModifyServices:,
+  peripheralIsReadyToSendWriteWithoutResponse:,
+  peripheralDidUpdateName:, willRestoreState:.
+* Helper: detect client disconnects and tear down scan, peripherals,
+  and L2CAP channels; handle client replacement with generation guard;
+  SO_NOSIGPIPE to prevent crashes on broken pipe.
+* Fix L2CAP close handshake on simulator side.
+* Make codesigning optional (build succeeds unsigned with a warning if
+  no matching identity is found).
+* Documentation: expanded README with simulator background, 1.0 roadmap,
+  single-client behavior clarification.
+
+0.1 (2026-01-27)
+-----------------
+
+Initial release (untagged).
+
+* Two-process architecture: library (ObjC runtime swizzling of
+  CBCentralManager at +load) and native macOS helper app communicating
+  over a Unix domain socket (/tmp/impossible.sock).
+* Newline-delimited JSON transport with base64-encoded data payloads.
+* Scanning for peripherals with optional service UUID filters.
+* Connecting and disconnecting peripherals.
+* Discovering services and characteristics.
+* Reading and writing characteristic values (with and without response).
+* Characteristic notifications (subscribe/unsubscribe).
+* L2CAP channel open, read, write, and close.
+* Proxy CoreBluetooth objects (CBSPeripheral, CBSService,
+  CBSCharacteristic, CBSChannel) that present as real CB types.
+* Delegate callbacks dispatched on the original CBCentralManager queue.
+* Automatic +load activation — no setup code required; on-device builds
+  compile to no-ops.
+* Swift Package Manager integration, Makefile with build/install/run/
+  restart/watch/clean targets, MIT license.
