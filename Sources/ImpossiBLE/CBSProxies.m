@@ -49,9 +49,27 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
     _shimState = state;
 }
 
+- (void)readRSSI {
+    CBSConnectionSend(@{@"type": @"readRSSI", @"id": _shimIdentifier.UUIDString});
+}
+
 - (void)discoverServices:(NSArray<CBUUID *> *)serviceUUIDs {
     NSArray<NSString *> *uuids = serviceUUIDs ? cbs_uuid_strings(serviceUUIDs) : @[];
     CBSConnectionSend(@{@"type": @"discoverServices", @"id": _shimIdentifier.UUIDString, @"services": uuids});
+}
+
+- (void)discoverIncludedServices:(NSArray<CBUUID *> *)includedServiceUUIDs forService:(CBService *)service {
+    CBSService *svc = [service isKindOfClass:[CBSService class]] ? (CBSService *)service : nil;
+    if (!svc || !svc.shimId) {
+        return;
+    }
+    NSArray<NSString *> *uuids = includedServiceUUIDs ? cbs_uuid_strings(includedServiceUUIDs) : @[];
+    CBSConnectionSend(@{
+        @"type": @"discoverIncludedServices",
+        @"id": _shimIdentifier.UUIDString,
+        @"serviceId": svc.shimId,
+        @"services": uuids
+    });
 }
 
 - (void)discoverCharacteristics:(NSArray<CBUUID *> *)characteristicUUIDs forService:(CBService *)service {
@@ -68,12 +86,36 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
     });
 }
 
+- (void)discoverDescriptorsForCharacteristic:(CBCharacteristic *)characteristic {
+    CBSCharacteristic *chr = [characteristic isKindOfClass:[CBSCharacteristic class]] ? (CBSCharacteristic *)characteristic : nil;
+    if (!chr || !chr.shimId) {
+        return;
+    }
+    CBSConnectionSend(@{
+        @"type": @"discoverDescriptors",
+        @"id": _shimIdentifier.UUIDString,
+        @"characteristicId": chr.shimId
+    });
+}
+
 - (void)readValueForCharacteristic:(CBCharacteristic *)characteristic {
     CBSCharacteristic *chr = [characteristic isKindOfClass:[CBSCharacteristic class]] ? (CBSCharacteristic *)characteristic : nil;
     if (!chr || !chr.shimId) {
         return;
     }
     CBSConnectionSend(@{@"type": @"read", @"id": _shimIdentifier.UUIDString, @"characteristicId": chr.shimId});
+}
+
+- (void)readValueForDescriptor:(CBDescriptor *)descriptor {
+    CBSDescriptor *desc = [descriptor isKindOfClass:[CBSDescriptor class]] ? (CBSDescriptor *)descriptor : nil;
+    if (!desc || !desc.shimId) {
+        return;
+    }
+    CBSConnectionSend(@{
+        @"type": @"readDescriptor",
+        @"id": _shimIdentifier.UUIDString,
+        @"descriptorId": desc.shimId
+    });
 }
 
 - (void)writeValue:(NSData *)data forCharacteristic:(CBCharacteristic *)characteristic type:(CBCharacteristicWriteType)type {
@@ -88,6 +130,20 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
         @"characteristicId": chr.shimId,
         @"value": b64,
         @"writeType": @(type)
+    });
+}
+
+- (void)writeValue:(NSData *)data forDescriptor:(CBDescriptor *)descriptor {
+    CBSDescriptor *desc = [descriptor isKindOfClass:[CBSDescriptor class]] ? (CBSDescriptor *)descriptor : nil;
+    if (!desc || !desc.shimId) {
+        return;
+    }
+    NSString *b64 = data ? [data base64EncodedStringWithOptions:0] : @"";
+    CBSConnectionSend(@{
+        @"type": @"writeDescriptor",
+        @"id": _shimIdentifier.UUIDString,
+        @"descriptorId": desc.shimId,
+        @"value": b64
     });
 }
 
@@ -117,6 +173,10 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
     return YES;
 }
 
+- (BOOL)ancsAuthorized {
+    return NO;
+}
+
 @end
 
 #pragma mark - CBSService (subclass of CBService)
@@ -126,6 +186,7 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
     BOOL _shimPrimary;
     CBSPeripheral *_shimPeripheral;
     NSArray *_shimCharacteristics;
+    NSArray *_shimIncludedServices;
 }
 
 - (instancetype)initWithId:(NSString *)shimId
@@ -139,6 +200,7 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
         _shimPrimary = primary;
         _shimPeripheral = peripheral;
         _shimCharacteristics = @[];
+        _shimIncludedServices = @[];
     }
     return self;
 }
@@ -146,7 +208,9 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
 - (CBUUID *)UUID { return _shimUUID; }
 - (BOOL)isPrimary { return _shimPrimary; }
 - (CBPeripheral *)peripheral { return (CBPeripheral *)_shimPeripheral; }
+- (NSArray *)includedServices { return _shimIncludedServices; }
 - (NSArray *)characteristics { return _shimCharacteristics; }
+- (void)cbs_setIncludedServices:(NSArray *)includedServices { _shimIncludedServices = [includedServices copy]; }
 - (void)cbs_setCharacteristics:(NSArray *)characteristics { _shimCharacteristics = [characteristics copy]; }
 
 @end
@@ -159,6 +223,7 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
     NSData *_shimValue;
     BOOL _shimNotifying;
     CBSService *_shimService;
+    NSArray *_shimDescriptors;
 }
 
 - (instancetype)initWithId:(NSString *)shimId
@@ -173,6 +238,7 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
         _shimService = service;
         _shimValue = nil;
         _shimNotifying = NO;
+        _shimDescriptors = @[];
     }
     return self;
 }
@@ -180,12 +246,42 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
 - (CBUUID *)UUID { return _shimUUID; }
 - (CBCharacteristicProperties)properties { return _shimProperties; }
 - (CBService *)service { return (CBService *)_shimService; }
+- (NSArray *)descriptors { return _shimDescriptors; }
 
 - (NSData *)value { return _shimValue; }
 - (void)cbs_setValue:(NSData *)value { _shimValue = [value copy]; }
 
 - (BOOL)isNotifying { return _shimNotifying; }
 - (void)cbs_setNotifying:(BOOL)notifying { _shimNotifying = notifying; }
+- (void)cbs_setDescriptors:(NSArray *)descriptors { _shimDescriptors = [descriptors copy]; }
+
+@end
+
+#pragma mark - CBSDescriptor (subclass of CBDescriptor)
+
+@implementation CBSDescriptor {
+    CBUUID *_shimUUID;
+    CBSCharacteristic *_shimCharacteristic;
+    id _shimValue;
+}
+
+- (instancetype)initWithId:(NSString *)shimId
+                      uuid:(CBUUID *)uuid
+            characteristic:(CBSCharacteristic *)characteristic {
+    self = cbs_super_init(self, [CBDescriptor class]);
+    if (self) {
+        _shimId = [shimId copy];
+        _shimUUID = uuid;
+        _shimCharacteristic = characteristic;
+        _shimValue = nil;
+    }
+    return self;
+}
+
+- (CBUUID *)UUID { return _shimUUID; }
+- (CBCharacteristic *)characteristic { return (CBCharacteristic *)_shimCharacteristic; }
+- (id)value { return _shimValue; }
+- (void)cbs_setValue:(id)value { _shimValue = value; }
 
 @end
 
@@ -227,25 +323,38 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
 - (instancetype)initWithIdentifier:(NSUUID *)identifier name:(NSString *)name { return nil; }
 - (void)cbs_updateName:(NSString *)name {}
 - (void)cbs_setState:(CBPeripheralState)state {}
+- (void)readRSSI {}
 - (void)discoverServices:(NSArray<CBUUID *> *)serviceUUIDs {}
+- (void)discoverIncludedServices:(NSArray<CBUUID *> *)includedServiceUUIDs forService:(CBService *)service {}
 - (void)discoverCharacteristics:(NSArray<CBUUID *> *)characteristicUUIDs forService:(CBService *)service {}
+- (void)discoverDescriptorsForCharacteristic:(CBCharacteristic *)characteristic {}
 - (void)readValueForCharacteristic:(CBCharacteristic *)characteristic {}
+- (void)readValueForDescriptor:(CBDescriptor *)descriptor {}
 - (void)writeValue:(NSData *)data forCharacteristic:(CBCharacteristic *)characteristic type:(CBCharacteristicWriteType)type {}
+- (void)writeValue:(NSData *)data forDescriptor:(CBDescriptor *)descriptor {}
 - (void)setNotifyValue:(BOOL)enabled forCharacteristic:(CBCharacteristic *)characteristic {}
 - (void)openL2CAPChannel:(CBL2CAPPSM)PSM {}
 - (NSInteger)maximumWriteValueLengthForType:(CBCharacteristicWriteType)type { return 0; }
 - (BOOL)canSendWriteWithoutResponse { return NO; }
+- (BOOL)ancsAuthorized { return NO; }
 @end
 
 @implementation CBSService
 - (instancetype)initWithId:(NSString *)shimId uuid:(CBUUID *)uuid primary:(BOOL)primary peripheral:(CBSPeripheral *)peripheral { return nil; }
 - (void)cbs_setCharacteristics:(NSArray *)characteristics {}
+- (void)cbs_setIncludedServices:(NSArray *)includedServices {}
 @end
 
 @implementation CBSCharacteristic
 - (instancetype)initWithId:(NSString *)shimId uuid:(CBUUID *)uuid properties:(CBCharacteristicProperties)properties service:(CBSService *)service { return nil; }
 - (void)cbs_setValue:(NSData *)value {}
 - (void)cbs_setNotifying:(BOOL)notifying {}
+- (void)cbs_setDescriptors:(NSArray *)descriptors {}
+@end
+
+@implementation CBSDescriptor
+- (instancetype)initWithId:(NSString *)shimId uuid:(CBUUID *)uuid characteristic:(CBSCharacteristic *)characteristic { return nil; }
+- (void)cbs_setValue:(id)value {}
 @end
 
 @implementation CBSChannel

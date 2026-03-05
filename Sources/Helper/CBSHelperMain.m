@@ -3,11 +3,13 @@
 #import <objc/runtime.h>
 #import <sys/socket.h>
 #import <sys/un.h>
+#import <signal.h>
 #import <unistd.h>
 
 static const char *kCBSSocketPath = "/tmp/impossible.sock";
 static void *kCBSServiceIdKey = &kCBSServiceIdKey;
 static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
+static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
 
 @interface CBSHelper : NSObject <CBCentralManagerDelegate, CBPeripheralDelegate, NSStreamDelegate>
 @property(nonatomic, strong) CBCentralManager *central;
@@ -15,10 +17,13 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
 @property(nonatomic, strong) NSMutableDictionary<NSUUID *, CBPeripheral *> *peripherals;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, CBService *> *servicesById;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, CBCharacteristic *> *characteristicsById;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, CBDescriptor *> *descriptorsById;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, CBL2CAPChannel *> *l2capById;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *streamToL2capId;
 @property(nonatomic, strong) NSArray<CBUUID *> *pendingServices;
 @property(nonatomic, strong) NSDictionary *pendingOptions;
+@property(nonatomic, strong) NSMutableSet<NSUUID *> *seenScanPeripherals;
+@property(nonatomic, assign) BOOL scanShouldDeduplicate;
 @property(nonatomic, assign) int clientFd;
 @property(nonatomic, assign) uint64_t clientGeneration;
 @end
@@ -33,11 +38,47 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
         _peripherals = [NSMutableDictionary dictionary];
         _servicesById = [NSMutableDictionary dictionary];
         _characteristicsById = [NSMutableDictionary dictionary];
+        _descriptorsById = [NSMutableDictionary dictionary];
         _l2capById = [NSMutableDictionary dictionary];
         _streamToL2capId = [NSMutableDictionary dictionary];
+        _seenScanPeripherals = [NSMutableSet set];
+        _scanShouldDeduplicate = YES;
         _clientFd = -1;
     }
     return self;
+}
+
+- (NSDictionary *)scanOptionsFromWire:(NSDictionary *)wireOptions {
+    NSDictionary *options = [wireOptions isKindOfClass:[NSDictionary class]] ? wireOptions : @{};
+    NSMutableDictionary *normalized = [NSMutableDictionary dictionary];
+
+    id allowDuplicates = options[CBCentralManagerScanOptionAllowDuplicatesKey];
+    if ([allowDuplicates respondsToSelector:@selector(boolValue)]) {
+        normalized[CBCentralManagerScanOptionAllowDuplicatesKey] = @([allowDuplicates boolValue]);
+    }
+    if (!normalized[CBCentralManagerScanOptionAllowDuplicatesKey]) {
+        // Match CoreBluetooth's documented default: duplicate discoveries are coalesced.
+        normalized[CBCentralManagerScanOptionAllowDuplicatesKey] = @NO;
+    }
+
+    id solicited = options[CBCentralManagerScanOptionSolicitedServiceUUIDsKey];
+    if ([solicited isKindOfClass:[NSArray class]]) {
+        NSMutableArray<CBUUID *> *uuids = [NSMutableArray array];
+        for (id item in (NSArray *)solicited) {
+            if ([item isKindOfClass:[CBUUID class]]) {
+                [uuids addObject:item];
+            } else if ([item isKindOfClass:[NSString class]]) {
+                CBUUID *uuid = [CBUUID UUIDWithString:item];
+                if (uuid) {
+                    [uuids addObject:uuid];
+                }
+            }
+        }
+        if (uuids.count > 0) {
+            normalized[CBCentralManagerScanOptionSolicitedServiceUUIDsKey] = uuids;
+        }
+    }
+    return normalized;
 }
 
 - (void)start {
@@ -76,10 +117,6 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
             if (client < 0) {
                 perror("accept");
                 continue;
-            }
-            int noSigPipe = 1;
-            if (setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, sizeof(noSigPipe)) != 0) {
-                perror("setsockopt(SO_NOSIGPIPE)");
             }
             if (self.clientFd >= 0) {
                 NSLog(@"ImpossiBLE-Helper: replacing existing client");
@@ -143,8 +180,11 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
     [self.peripherals removeAllObjects];
     [self.servicesById removeAllObjects];
     [self.characteristicsById removeAllObjects];
+    [self.descriptorsById removeAllObjects];
     [self.l2capById removeAllObjects];
     [self.streamToL2capId removeAllObjects];
+    [self.seenScanPeripherals removeAllObjects];
+    self.scanShouldDeduplicate = YES;
     self.pendingServices = nil;
     self.pendingOptions = nil;
 
@@ -183,19 +223,32 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
     }
     NSLog(@"ImpossiBLE-Helper: recv type=%@", type);
 
+    if ([type isEqualToString:@"registerForConnectionEvents"]) {
+        NSDictionary *options = msg[@"options"];
+        dispatch_async(self.cbQueue, ^{
+#if TARGET_OS_IOS
+            if (@available(iOS 13.0, *)) {
+                NSDictionary *eventOptions = [options isKindOfClass:[NSDictionary class]] ? options : nil;
+                [self.central registerForConnectionEventsWithOptions:eventOptions];
+            }
+#endif
+        });
+        return;
+    }
+
     if ([type isEqualToString:@"scan"]) {
         NSArray *services = msg[@"services"];
-        NSDictionary *options = msg[@"options"];
+        NSDictionary *options = [self scanOptionsFromWire:msg[@"options"]];
         NSMutableArray<CBUUID *> *uuids = [NSMutableArray array];
         if ([services isKindOfClass:[NSArray class]]) {
             for (id item in services) {
                 if ([item isKindOfClass:[NSString class]]) {
-                    [uuids addObject:[CBUUID UUIDWithString:item]];
+                    CBUUID *uuid = [CBUUID UUIDWithString:item];
+                    if (uuid) {
+                        [uuids addObject:uuid];
+                    }
                 }
             }
-        }
-        if (![options isKindOfClass:[NSDictionary class]]) {
-            options = @{};
         }
         [self startScanWithServices:uuids options:options];
         return;
@@ -204,6 +257,7 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
     if ([type isEqualToString:@"stopScan"]) {
         dispatch_async(self.cbQueue, ^{
             [self.central stopScan];
+            [self.seenScanPeripherals removeAllObjects];
         });
         return;
     }
@@ -247,6 +301,26 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
         return;
     }
 
+    if ([type isEqualToString:@"readRSSI"]) {
+        NSString *uuidStr = msg[@"id"];
+        if (![uuidStr isKindOfClass:[NSString class]]) {
+            return;
+        }
+        NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidStr];
+        if (!uuid) {
+            return;
+        }
+        CBPeripheral *peripheral = self.peripherals[uuid];
+        if (!peripheral) {
+            return;
+        }
+        dispatch_async(self.cbQueue, ^{
+            peripheral.delegate = self;
+            [peripheral readRSSI];
+        });
+        return;
+    }
+
     if ([type isEqualToString:@"discoverServices"]) {
         NSString *uuidStr = msg[@"id"];
         NSArray *services = msg[@"services"];
@@ -265,7 +339,10 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
         if ([services isKindOfClass:[NSArray class]]) {
             for (id item in services) {
                 if ([item isKindOfClass:[NSString class]]) {
-                    [uuids addObject:[CBUUID UUIDWithString:item]];
+                    CBUUID *uuid = [CBUUID UUIDWithString:item];
+                    if (uuid) {
+                        [uuids addObject:uuid];
+                    }
                 }
             }
         }
@@ -273,6 +350,34 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
             peripheral.delegate = self;
             NSArray<CBUUID *> *svc = uuids.count > 0 ? uuids : nil;
             [peripheral discoverServices:svc];
+        });
+        return;
+    }
+
+    if ([type isEqualToString:@"discoverIncludedServices"]) {
+        NSString *serviceId = msg[@"serviceId"];
+        NSArray *services = msg[@"services"];
+        if (![serviceId isKindOfClass:[NSString class]]) {
+            return;
+        }
+        CBService *service = self.servicesById[serviceId];
+        if (!service) {
+            return;
+        }
+        NSMutableArray<CBUUID *> *uuids = [NSMutableArray array];
+        if ([services isKindOfClass:[NSArray class]]) {
+            for (id item in services) {
+                if ([item isKindOfClass:[NSString class]]) {
+                    CBUUID *uuid = [CBUUID UUIDWithString:item];
+                    if (uuid) {
+                        [uuids addObject:uuid];
+                    }
+                }
+            }
+        }
+        dispatch_async(self.cbQueue, ^{
+            NSArray<CBUUID *> *svc = uuids.count > 0 ? uuids : nil;
+            [service.peripheral discoverIncludedServices:svc forService:service];
         });
         return;
     }
@@ -291,13 +396,31 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
         if ([chars isKindOfClass:[NSArray class]]) {
             for (id item in chars) {
                 if ([item isKindOfClass:[NSString class]]) {
-                    [uuids addObject:[CBUUID UUIDWithString:item]];
+                    CBUUID *uuid = [CBUUID UUIDWithString:item];
+                    if (uuid) {
+                        [uuids addObject:uuid];
+                    }
                 }
             }
         }
         dispatch_async(self.cbQueue, ^{
             NSArray<CBUUID *> *svc = uuids.count > 0 ? uuids : nil;
             [service.peripheral discoverCharacteristics:svc forService:service];
+        });
+        return;
+    }
+
+    if ([type isEqualToString:@"discoverDescriptors"]) {
+        NSString *chId = msg[@"characteristicId"];
+        if (![chId isKindOfClass:[NSString class]]) {
+            return;
+        }
+        CBCharacteristic *chr = self.characteristicsById[chId];
+        if (!chr) {
+            return;
+        }
+        dispatch_async(self.cbQueue, ^{
+            [chr.service.peripheral discoverDescriptorsForCharacteristic:chr];
         });
         return;
     }
@@ -313,6 +436,21 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
         }
         dispatch_async(self.cbQueue, ^{
             [chr.service.peripheral readValueForCharacteristic:chr];
+        });
+        return;
+    }
+
+    if ([type isEqualToString:@"readDescriptor"]) {
+        NSString *descriptorId = msg[@"descriptorId"];
+        if (![descriptorId isKindOfClass:[NSString class]]) {
+            return;
+        }
+        CBDescriptor *descriptor = self.descriptorsById[descriptorId];
+        if (!descriptor) {
+            return;
+        }
+        dispatch_async(self.cbQueue, ^{
+            [descriptor.characteristic.service.peripheral readValueForDescriptor:descriptor];
         });
         return;
     }
@@ -337,6 +475,28 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
         CBCharacteristicWriteType wt = writeType.integerValue == 1 ? CBCharacteristicWriteWithoutResponse : CBCharacteristicWriteWithResponse;
         dispatch_async(self.cbQueue, ^{
             [chr.service.peripheral writeValue:data forCharacteristic:chr type:wt];
+        });
+        return;
+    }
+
+    if ([type isEqualToString:@"writeDescriptor"]) {
+        NSString *descriptorId = msg[@"descriptorId"];
+        NSString *valueB64 = msg[@"value"];
+        if (![descriptorId isKindOfClass:[NSString class]]) {
+            return;
+        }
+        CBDescriptor *descriptor = self.descriptorsById[descriptorId];
+        if (!descriptor) {
+            return;
+        }
+        NSData *data = nil;
+        if ([valueB64 isKindOfClass:[NSString class]] && valueB64.length > 0) {
+            data = [[NSData alloc] initWithBase64EncodedString:valueB64 options:0];
+        } else {
+            data = [NSData data];
+        }
+        dispatch_async(self.cbQueue, ^{
+            [descriptor.characteristic.service.peripheral writeValue:data forDescriptor:descriptor];
         });
         return;
     }
@@ -424,10 +584,14 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
 
 - (void)startScanWithServices:(NSArray<CBUUID *> *)services options:(NSDictionary *)options {
     dispatch_async(self.cbQueue, ^{
+        BOOL allowDuplicates = [options[CBCentralManagerScanOptionAllowDuplicatesKey] boolValue];
+        self.scanShouldDeduplicate = !allowDuplicates;
+        [self.seenScanPeripherals removeAllObjects];
         if (self.central.state == CBManagerStatePoweredOn) {
             NSArray<CBUUID *> *svc = services.count > 0 ? services : nil;
             [self.central scanForPeripheralsWithServices:svc options:options];
-            NSLog(@"ImpossiBLE-Helper: scanning");
+            NSLog(@"ImpossiBLE-Helper: scanning (allowDuplicates=%@)",
+                  allowDuplicates ? @"YES" : @"NO");
         } else {
             self.pendingServices = services;
             self.pendingOptions = options;
@@ -497,6 +661,56 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
             (unsigned long)index];
 }
 
+- (NSString *)descriptorIdForCharacteristicId:(NSString *)characteristicId descriptor:(CBDescriptor *)descriptor index:(NSUInteger)index {
+    return [NSString stringWithFormat:@"%@:%@:%lu",
+            characteristicId,
+            descriptor.UUID.UUIDString,
+            (unsigned long)index];
+}
+
+- (id)jsonSafeDescriptorValue:(id)value descriptorValueB64Out:(NSString **)valueB64Out {
+    if (valueB64Out) {
+        *valueB64Out = @"";
+    }
+    if (!value || value == [NSNull null]) {
+        return [NSNull null];
+    }
+    if ([value isKindOfClass:[NSData class]]) {
+        if (valueB64Out) {
+            *valueB64Out = [(NSData *)value base64EncodedStringWithOptions:0];
+        }
+        return [NSNull null];
+    }
+    if ([value isKindOfClass:[NSString class]] ||
+        [value isKindOfClass:[NSNumber class]] ||
+        [value isKindOfClass:[NSNull class]]) {
+        return value;
+    }
+    if ([value isKindOfClass:[NSArray class]] || [value isKindOfClass:[NSDictionary class]]) {
+        if ([NSJSONSerialization isValidJSONObject:value]) {
+            return value;
+        }
+    }
+    return [value description] ?: @"";
+}
+
+- (void)sendDisconnectForPeripheral:(CBPeripheral *)peripheral
+                          timestamp:(CFAbsoluteTime)timestamp
+                     isReconnecting:(BOOL)isReconnecting
+                              error:(NSError *)error {
+    if (!peripheral.identifier) {
+        return;
+    }
+    NSString *errStr = error ? [error localizedDescription] : @"";
+    [self sendMessage:@{
+        @"type": @"didDisconnect",
+        @"id": peripheral.identifier.UUIDString,
+        @"error": errStr,
+        @"timestamp": @(timestamp),
+        @"isReconnecting": @(isReconnecting)
+    }];
+}
+
 #pragma mark - CBCentralManagerDelegate
 
 - (void)centralManagerDidUpdateState:(CBCentralManager *)central {
@@ -506,9 +720,50 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
         NSDictionary *options = self.pendingOptions ?: @{};
         self.pendingServices = nil;
         self.pendingOptions = nil;
+        self.scanShouldDeduplicate = ![options[CBCentralManagerScanOptionAllowDuplicatesKey] boolValue];
+        [self.seenScanPeripherals removeAllObjects];
         [central scanForPeripheralsWithServices:(services.count > 0 ? services : nil) options:options];
         NSLog(@"ImpossiBLE-Helper: deferred scan started");
     }
+}
+
+- (void)centralManager:(CBCentralManager *)central willRestoreState:(NSDictionary<NSString *,id> *)dict {
+    NSMutableArray *peripheralIds = [NSMutableArray array];
+    NSArray<CBPeripheral *> *peripherals = dict[CBCentralManagerRestoredStatePeripheralsKey];
+    if ([peripherals isKindOfClass:[NSArray class]]) {
+        for (CBPeripheral *peripheral in peripherals) {
+            if (![peripheral isKindOfClass:[CBPeripheral class]] || !peripheral.identifier) {
+                continue;
+            }
+            self.peripherals[peripheral.identifier] = peripheral;
+            peripheral.delegate = self;
+            [peripheralIds addObject:peripheral.identifier.UUIDString];
+        }
+    }
+
+    NSMutableArray *scanServices = [NSMutableArray array];
+    NSArray *rawServices = dict[CBCentralManagerRestoredStateScanServicesKey];
+    if ([rawServices isKindOfClass:[NSArray class]]) {
+        for (id item in rawServices) {
+            if ([item isKindOfClass:[CBUUID class]]) {
+                NSString *uuid = ((CBUUID *)item).UUIDString;
+                if (uuid.length > 0) {
+                    [scanServices addObject:uuid];
+                }
+            } else if ([item isKindOfClass:[NSString class]]) {
+                [scanServices addObject:item];
+            }
+        }
+    }
+
+    NSDictionary *scanOptions = [self scanOptionsFromWire:dict[CBCentralManagerRestoredStateScanOptionsKey]];
+
+    [self sendMessage:@{
+        @"type": @"didRestoreState",
+        @"peripheralIds": peripheralIds,
+        @"scanServices": scanServices,
+        @"scanOptions": scanOptions ?: @{}
+    }];
 }
 
 - (void)centralManager:(CBCentralManager *)central
@@ -518,11 +773,108 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
     if (!peripheral.identifier) {
         return;
     }
+    if (self.scanShouldDeduplicate && [self.seenScanPeripherals containsObject:peripheral.identifier]) {
+        return;
+    }
+    if (self.scanShouldDeduplicate) {
+        [self.seenScanPeripherals addObject:peripheral.identifier];
+    }
     self.peripherals[peripheral.identifier] = peripheral;
     peripheral.delegate = self;
-    NSString *name = peripheral.name ?: @"";
-    NSString *advName = advertisementData[CBAdvertisementDataLocalNameKey];
-    NSDictionary *adv = advName ? @{@"localName": advName} : @{};
+    NSString *advName = [advertisementData[CBAdvertisementDataLocalNameKey] isKindOfClass:[NSString class]]
+        ? advertisementData[CBAdvertisementDataLocalNameKey]
+        : nil;
+    NSString *name = peripheral.name ?: advName ?: @"";
+
+    NSMutableDictionary *adv = [NSMutableDictionary dictionary];
+    if (advName.length > 0) {
+        adv[CBAdvertisementDataLocalNameKey] = advName;
+    }
+
+    id connectable = advertisementData[CBAdvertisementDataIsConnectable];
+    if ([connectable respondsToSelector:@selector(boolValue)]) {
+        adv[CBAdvertisementDataIsConnectable] = @([connectable boolValue]);
+    }
+
+    NSArray *serviceUUIDs = advertisementData[CBAdvertisementDataServiceUUIDsKey];
+    if ([serviceUUIDs isKindOfClass:[NSArray class]]) {
+        NSMutableArray *serialized = [NSMutableArray array];
+        for (id item in serviceUUIDs) {
+            if ([item isKindOfClass:[CBUUID class]]) {
+                NSString *uuid = ((CBUUID *)item).UUIDString;
+                if (uuid.length > 0) {
+                    [serialized addObject:uuid];
+                }
+            } else if ([item isKindOfClass:[NSString class]]) {
+                [serialized addObject:item];
+            }
+        }
+        if (serialized.count > 0) {
+            adv[CBAdvertisementDataServiceUUIDsKey] = serialized;
+        }
+    }
+
+    NSArray *overflowUUIDs = advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey];
+    if ([overflowUUIDs isKindOfClass:[NSArray class]]) {
+        NSMutableArray *serialized = [NSMutableArray array];
+        for (id item in overflowUUIDs) {
+            if ([item isKindOfClass:[CBUUID class]]) {
+                NSString *uuid = ((CBUUID *)item).UUIDString;
+                if (uuid.length > 0) {
+                    [serialized addObject:uuid];
+                }
+            } else if ([item isKindOfClass:[NSString class]]) {
+                [serialized addObject:item];
+            }
+        }
+        if (serialized.count > 0) {
+            adv[CBAdvertisementDataOverflowServiceUUIDsKey] = serialized;
+        }
+    }
+
+    NSArray *solicitedUUIDs = advertisementData[CBAdvertisementDataSolicitedServiceUUIDsKey];
+    if ([solicitedUUIDs isKindOfClass:[NSArray class]]) {
+        NSMutableArray *serialized = [NSMutableArray array];
+        for (id item in solicitedUUIDs) {
+            if ([item isKindOfClass:[CBUUID class]]) {
+                NSString *uuid = ((CBUUID *)item).UUIDString;
+                if (uuid.length > 0) {
+                    [serialized addObject:uuid];
+                }
+            } else if ([item isKindOfClass:[NSString class]]) {
+                [serialized addObject:item];
+            }
+        }
+        if (serialized.count > 0) {
+            adv[CBAdvertisementDataSolicitedServiceUUIDsKey] = serialized;
+        }
+    }
+
+    NSData *manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey];
+    if ([manufacturerData isKindOfClass:[NSData class]] && manufacturerData.length > 0) {
+        adv[CBAdvertisementDataManufacturerDataKey] = [manufacturerData base64EncodedStringWithOptions:0];
+    }
+
+    NSDictionary *serviceData = advertisementData[CBAdvertisementDataServiceDataKey];
+    if ([serviceData isKindOfClass:[NSDictionary class]]) {
+        NSMutableDictionary *serialized = [NSMutableDictionary dictionary];
+        for (id key in serviceData) {
+            CBUUID *uuid = [key isKindOfClass:[CBUUID class]] ? (CBUUID *)key : nil;
+            NSData *value = [serviceData[key] isKindOfClass:[NSData class]] ? serviceData[key] : nil;
+            if (uuid.UUIDString.length > 0 && value.length > 0) {
+                serialized[uuid.UUIDString] = [value base64EncodedStringWithOptions:0];
+            }
+        }
+        if (serialized.count > 0) {
+            adv[CBAdvertisementDataServiceDataKey] = serialized;
+        }
+    }
+
+    id txPower = advertisementData[CBAdvertisementDataTxPowerLevelKey];
+    if ([txPower isKindOfClass:[NSNumber class]]) {
+        adv[CBAdvertisementDataTxPowerLevelKey] = txPower;
+    }
+
     [self sendMessage:@{
         @"type": @"didDiscover",
         @"id": peripheral.identifier.UUIDString,
@@ -548,11 +900,34 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
 }
 
 - (void)centralManager:(CBCentralManager *)central didDisconnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error {
+    [self sendDisconnectForPeripheral:peripheral
+                            timestamp:CFAbsoluteTimeGetCurrent()
+                       isReconnecting:NO
+                                error:error];
+}
+
+- (void)centralManager:(CBCentralManager *)central
+ didDisconnectPeripheral:(CBPeripheral *)peripheral
+              timestamp:(CFAbsoluteTime)timestamp
+         isReconnecting:(BOOL)isReconnecting
+                  error:(NSError *)error API_AVAILABLE(ios(17.0), macos(14.0)) {
+    [self sendDisconnectForPeripheral:peripheral
+                            timestamp:timestamp
+                       isReconnecting:isReconnecting
+                                error:error];
+}
+
+- (void)centralManager:(CBCentralManager *)central
+connectionEventDidOccur:(CBConnectionEvent)event
+          forPeripheral:(CBPeripheral *)peripheral API_AVAILABLE(ios(13.0)) {
     if (!peripheral.identifier) {
         return;
     }
-    NSString *errStr = error ? [error localizedDescription] : @"";
-    [self sendMessage:@{@"type": @"didDisconnect", @"id": peripheral.identifier.UUIDString, @"error": errStr}];
+    [self sendMessage:@{
+        @"type": @"connectionEvent",
+        @"id": peripheral.identifier.UUIDString,
+        @"event": @(event)
+    }];
 }
 
 #pragma mark - CBPeripheralDelegate
@@ -612,6 +987,78 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
     }];
 }
 
+- (void)peripheral:(CBPeripheral *)peripheral didDiscoverIncludedServicesForService:(CBService *)service error:(NSError *)error {
+    if (!peripheral.identifier) {
+        return;
+    }
+    NSString *serviceId = objc_getAssociatedObject(service, kCBSServiceIdKey);
+    if (![serviceId isKindOfClass:[NSString class]]) {
+        return;
+    }
+    NSMutableArray *includedPayload = [NSMutableArray array];
+    NSArray<CBService *> *includedServices = service.includedServices ?: @[];
+    [includedServices enumerateObjectsUsingBlock:^(CBService *includedService, NSUInteger idx, BOOL *stop) {
+        NSString *includedServiceId = [self serviceIdForPeripheral:peripheral service:includedService index:idx];
+        objc_setAssociatedObject(includedService, kCBSServiceIdKey, includedServiceId, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        self.servicesById[includedServiceId] = includedService;
+        [includedPayload addObject:@{
+            @"id": includedServiceId,
+            @"uuid": includedService.UUID.UUIDString ?: @"",
+            @"primary": @(includedService.isPrimary)
+        }];
+    }];
+    NSString *errStr = error ? [error localizedDescription] : @"";
+    [self sendMessage:@{
+        @"type": @"didDiscoverIncludedServices",
+        @"id": peripheral.identifier.UUIDString,
+        @"serviceId": serviceId,
+        @"includedServices": includedPayload,
+        @"error": errStr
+    }];
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didDiscoverDescriptorsForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
+    if (!peripheral.identifier) {
+        return;
+    }
+    NSString *characteristicId = objc_getAssociatedObject(characteristic, kCBSCharacteristicIdKey);
+    if (![characteristicId isKindOfClass:[NSString class]]) {
+        return;
+    }
+    NSMutableArray *descriptorsPayload = [NSMutableArray array];
+    NSArray<CBDescriptor *> *descriptors = characteristic.descriptors ?: @[];
+    [descriptors enumerateObjectsUsingBlock:^(CBDescriptor *descriptor, NSUInteger idx, BOOL *stop) {
+        NSString *descriptorId = [self descriptorIdForCharacteristicId:characteristicId descriptor:descriptor index:idx];
+        objc_setAssociatedObject(descriptor, kCBSDescriptorIdKey, descriptorId, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        self.descriptorsById[descriptorId] = descriptor;
+        [descriptorsPayload addObject:@{
+            @"id": descriptorId,
+            @"uuid": descriptor.UUID.UUIDString ?: @""
+        }];
+    }];
+    NSString *errStr = error ? [error localizedDescription] : @"";
+    [self sendMessage:@{
+        @"type": @"didDiscoverDescriptors",
+        @"id": peripheral.identifier.UUIDString,
+        @"characteristicId": characteristicId,
+        @"descriptors": descriptorsPayload,
+        @"error": errStr
+    }];
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didReadRSSI:(NSNumber *)RSSI error:(NSError *)error {
+    if (!peripheral.identifier) {
+        return;
+    }
+    NSString *errStr = error ? [error localizedDescription] : @"";
+    [self sendMessage:@{
+        @"type": @"didReadRSSI",
+        @"id": peripheral.identifier.UUIDString,
+        @"rssi": RSSI ?: @0,
+        @"error": errStr
+    }];
+}
+
 - (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
     if (!peripheral.identifier) {
         return;
@@ -644,6 +1091,44 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
         @"type": @"didWriteValue",
         @"id": peripheral.identifier.UUIDString,
         @"characteristicId": chId,
+        @"error": errStr
+    }];
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForDescriptor:(CBDescriptor *)descriptor error:(NSError *)error {
+    if (!peripheral.identifier) {
+        return;
+    }
+    NSString *descriptorId = objc_getAssociatedObject(descriptor, kCBSDescriptorIdKey);
+    if (![descriptorId isKindOfClass:[NSString class]]) {
+        return;
+    }
+    NSString *valueB64 = @"";
+    id value = [self jsonSafeDescriptorValue:descriptor.value descriptorValueB64Out:&valueB64];
+    NSString *errStr = error ? [error localizedDescription] : @"";
+    [self sendMessage:@{
+        @"type": @"didUpdateDescriptorValue",
+        @"id": peripheral.identifier.UUIDString,
+        @"descriptorId": descriptorId,
+        @"value": value ?: [NSNull null],
+        @"valueB64": valueB64,
+        @"error": errStr
+    }];
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didWriteValueForDescriptor:(CBDescriptor *)descriptor error:(NSError *)error {
+    if (!peripheral.identifier) {
+        return;
+    }
+    NSString *descriptorId = objc_getAssociatedObject(descriptor, kCBSDescriptorIdKey);
+    if (![descriptorId isKindOfClass:[NSString class]]) {
+        return;
+    }
+    NSString *errStr = error ? [error localizedDescription] : @"";
+    [self sendMessage:@{
+        @"type": @"didWriteDescriptorValue",
+        @"id": peripheral.identifier.UUIDString,
+        @"descriptorId": descriptorId,
         @"error": errStr
     }];
 }
@@ -708,6 +1193,46 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
     }];
 }
 
+- (void)peripheral:(CBPeripheral *)peripheral didModifyServices:(NSArray<CBService *> *)invalidatedServices {
+    if (!peripheral.identifier) {
+        return;
+    }
+    NSMutableArray *payload = [NSMutableArray array];
+    for (CBService *service in invalidatedServices) {
+        NSString *serviceId = objc_getAssociatedObject(service, kCBSServiceIdKey);
+        if (!serviceId || ![serviceId isKindOfClass:[NSString class]]) {
+            continue;
+        }
+        [payload addObject:serviceId];
+    }
+    [self sendMessage:@{
+        @"type": @"didModifyServices",
+        @"id": peripheral.identifier.UUIDString,
+        @"serviceIds": payload
+    }];
+}
+
+- (void)peripheralIsReadyToSendWriteWithoutResponse:(CBPeripheral *)peripheral {
+    if (!peripheral.identifier) {
+        return;
+    }
+    [self sendMessage:@{
+        @"type": @"didReadyToWriteWithoutResponse",
+        @"id": peripheral.identifier.UUIDString
+    }];
+}
+
+- (void)peripheralDidUpdateName:(CBPeripheral *)peripheral {
+    if (!peripheral.identifier) {
+        return;
+    }
+    [self sendMessage:@{
+        @"type": @"didUpdateName",
+        @"id": peripheral.identifier.UUIDString,
+        @"name": peripheral.name ?: @""
+    }];
+}
+
 #pragma mark - NSStreamDelegate (L2CAP)
 
 - (void)stream:(NSStream *)aStream handleEvent:(NSStreamEvent)eventCode {
@@ -752,6 +1277,7 @@ static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
 
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        signal(SIGPIPE, SIG_IGN);
         NSLog(@"ImpossiBLE-Helper: starting");
         CBSHelper *helper = [[CBSHelper alloc] init];
         [helper start];
