@@ -1212,18 +1212,19 @@ static void cbs_handle_message(NSDictionary *msg) {
         if (!peripheral || !chr) {
             return;
         }
+        NSData *decodedValue = nil;
         if ([valueB64 isKindOfClass:[NSString class]] && valueB64.length > 0) {
-            [chr cbs_setValue:[[NSData alloc] initWithBase64EncodedString:valueB64 options:0]];
-        } else {
-            [chr cbs_setValue:nil];
+            decodedValue = [[NSData alloc] initWithBase64EncodedString:valueB64 options:0];
         }
         NSError *err = cbs_error_from_message(errStr);
         id<CBPeripheralDelegate> delegate = peripheral.delegate;
         if (!delegate || ![delegate respondsToSelector:@selector(peripheral:didUpdateValueForCharacteristic:error:)]) {
+            [chr cbs_setValue:decodedValue];
             return;
         }
         dispatch_queue_t queue = cbs_callback_queue_for_peripheral(peripheral);
         dispatch_async(queue, ^{
+            [chr cbs_setValue:decodedValue];
             [delegate peripheral:(CBPeripheral *)peripheral didUpdateValueForCharacteristic:(CBCharacteristic *)chr error:err];
         });
         return;
@@ -1267,14 +1268,16 @@ static void cbs_handle_message(NSDictionary *msg) {
         if (!peripheral || !descriptor) {
             return;
         }
-        [descriptor cbs_setValue:cbs_decode_descriptor_value(msg)];
+        id decodedValue = cbs_decode_descriptor_value(msg);
         NSError *err = cbs_error_from_message(errStr);
         id<CBPeripheralDelegate> delegate = peripheral.delegate;
         if (!delegate || ![delegate respondsToSelector:@selector(peripheral:didUpdateValueForDescriptor:error:)]) {
+            [descriptor cbs_setValue:decodedValue];
             return;
         }
         dispatch_queue_t queue = cbs_callback_queue_for_peripheral(peripheral);
         dispatch_async(queue, ^{
+            [descriptor cbs_setValue:decodedValue];
             [delegate peripheral:(CBPeripheral *)peripheral didUpdateValueForDescriptor:(CBDescriptor *)descriptor error:err];
         });
         return;
@@ -1319,14 +1322,16 @@ static void cbs_handle_message(NSDictionary *msg) {
         if (!peripheral || !chr) {
             return;
         }
-        [chr cbs_setNotifying:enabled.boolValue];
+        BOOL notifying = enabled.boolValue;
         NSError *err = cbs_error_from_message(errStr);
         id<CBPeripheralDelegate> delegate = peripheral.delegate;
         if (!delegate || ![delegate respondsToSelector:@selector(peripheral:didUpdateNotificationStateForCharacteristic:error:)]) {
+            [chr cbs_setNotifying:notifying];
             return;
         }
         dispatch_queue_t queue = cbs_callback_queue_for_peripheral(peripheral);
         dispatch_async(queue, ^{
+            [chr cbs_setNotifying:notifying];
             [delegate peripheral:(CBPeripheral *)peripheral didUpdateNotificationStateForCharacteristic:(CBCharacteristic *)chr error:err];
         });
         return;

@@ -1,6 +1,21 @@
 ImpossiBLE ChangeLog
 ====================
 
+0.6 (2026-03-05)
+-----------------
+
+Simulator callback ordering fix for characteristic and descriptor updates.
+
+* Fix a race in the simulator bridge where rapid `didUpdateValue` events
+  could overwrite `CBCharacteristic.value` before the delegate callback
+  consumed it.
+* Align descriptor value and notification-state updates with callback
+  dispatch ordering so state is updated on the same callback queue
+  execution as delegate invocation.
+* Eliminates simulator-side frame corruption symptoms seen during heavy
+  OBD scans (truncated payloads, malformed responses, intermittent empty
+  `\r` completions).
+
 0.5 (2026-03-05)
 -----------------
 
