@@ -8,6 +8,7 @@
 static const char *kCBSSocketPath = "/tmp/impossible.sock";
 static int gSockFd = -1;
 static dispatch_queue_t gReadQueue;
+static dispatch_queue_t gWriteQueue;
 static CBSMessageHandler gMessageHandler;
 
 static int cbs_find_newline(NSData *data) {
@@ -59,6 +60,20 @@ static void cbs_start_reader(int fd) {
     });
 }
 
+static BOOL cbs_write_all(int fd, const void *bytes, size_t length) {
+    const uint8_t *ptr = (const uint8_t *)bytes;
+    size_t remaining = length;
+    while (remaining > 0) {
+        ssize_t written = write(fd, ptr, remaining);
+        if (written <= 0) {
+            return NO;
+        }
+        ptr += (size_t)written;
+        remaining -= (size_t)written;
+    }
+    return YES;
+}
+
 static int cbs_connect(void) {
     if (gSockFd >= 0) {
         return gSockFd;
@@ -94,20 +109,29 @@ void CBSConnectionSetMessageHandler(CBSMessageHandler handler) {
 }
 
 void CBSConnectionSend(NSDictionary *msg) {
-    int fd = cbs_connect();
-    if (fd < 0) {
-        NSLog(@"ImpossiBLE: send failed — not connected");
-        return;
+    if (!gWriteQueue) {
+        gWriteQueue = dispatch_queue_create("impossible.writer", DISPATCH_QUEUE_SERIAL);
     }
-    NSError *error = nil;
-    NSData *data = [NSJSONSerialization dataWithJSONObject:msg options:0 error:&error];
-    if (!data) {
-        NSLog(@"ImpossiBLE: send failed — JSON error: %@", error);
-        return;
-    }
-    ssize_t written = write(fd, data.bytes, data.length);
-    write(fd, "\n", 1);
-    NSLog(@"ImpossiBLE: sent %zd bytes (type=%@)", written, msg[@"type"]);
+    dispatch_async(gWriteQueue, ^{
+        int fd = cbs_connect();
+        if (fd < 0) {
+            NSLog(@"ImpossiBLE: send failed — not connected");
+            return;
+        }
+        NSError *error = nil;
+        NSData *data = [NSJSONSerialization dataWithJSONObject:msg options:0 error:&error];
+        if (!data) {
+            NSLog(@"ImpossiBLE: send failed — JSON error: %@", error);
+            return;
+        }
+        if (!cbs_write_all(fd, data.bytes, data.length) || !cbs_write_all(fd, "\n", 1)) {
+            NSLog(@"ImpossiBLE: send failed — socket write error");
+            close(fd);
+            gSockFd = -1;
+            return;
+        }
+        NSLog(@"ImpossiBLE: sent %lu bytes (type=%@)", (unsigned long)data.length, msg[@"type"]);
+    });
 }
 
 #else

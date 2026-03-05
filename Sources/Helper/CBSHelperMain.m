@@ -14,6 +14,7 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
 @interface CBSHelper : NSObject <CBCentralManagerDelegate, CBPeripheralDelegate, NSStreamDelegate>
 @property(nonatomic, strong) CBCentralManager *central;
 @property(nonatomic, strong) dispatch_queue_t cbQueue;
+@property(nonatomic, strong) dispatch_queue_t ioQueue;
 @property(nonatomic, strong) NSMutableDictionary<NSUUID *, CBPeripheral *> *peripherals;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, CBService *> *servicesById;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, CBCharacteristic *> *characteristicsById;
@@ -36,6 +37,7 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
     self = [super init];
     if (self) {
         _cbQueue = dispatch_queue_create("impossible.cb", DISPATCH_QUEUE_SERIAL);
+        _ioQueue = dispatch_queue_create("impossible.io", DISPATCH_QUEUE_SERIAL);
         _central = [[CBCentralManager alloc] initWithDelegate:self queue:_cbQueue options:nil];
         _peripherals = [NSMutableDictionary dictionary];
         _servicesById = [NSMutableDictionary dictionary];
@@ -122,15 +124,17 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
                 perror("accept");
                 continue;
             }
-            if (self.clientFd >= 0) {
-                NSLog(@"ImpossiBLE-Helper: replacing existing client");
-                [self handleClientDisconnectForFd:self.clientFd generation:self.clientGeneration];
-            }
-            NSLog(@"ImpossiBLE-Helper: client connected");
-            self.clientFd = client;
-            self.clientGeneration += 1;
-            uint64_t generation = self.clientGeneration;
-            [self startReaderForClient:client generation:generation];
+            dispatch_async(self.ioQueue, ^{
+                if (self.clientFd >= 0) {
+                    NSLog(@"ImpossiBLE-Helper: replacing existing client");
+                    [self handleClientDisconnectLockedForFd:self.clientFd generation:self.clientGeneration];
+                }
+                NSLog(@"ImpossiBLE-Helper: client connected");
+                self.clientFd = client;
+                self.clientGeneration += 1;
+                uint64_t generation = self.clientGeneration;
+                [self startReaderForClient:client generation:generation];
+            });
         }
     });
 }
@@ -142,8 +146,10 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
             uint8_t tmp[2048];
             ssize_t n = read(fd, tmp, sizeof(tmp));
             if (n <= 0) {
-                NSLog(@"ImpossiBLE-Helper: client disconnected");
-                [self handleClientDisconnectForFd:fd generation:generation];
+                dispatch_async(self.ioQueue, ^{
+                    NSLog(@"ImpossiBLE-Helper: client disconnected");
+                    [self handleClientDisconnectLockedForFd:fd generation:generation];
+                });
                 break;
             }
             [buffer appendBytes:tmp length:(NSUInteger)n];
@@ -169,6 +175,12 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
 }
 
 - (void)handleClientDisconnectForFd:(int)fd generation:(uint64_t)generation {
+    dispatch_async(self.ioQueue, ^{
+        [self handleClientDisconnectLockedForFd:fd generation:generation];
+    });
+}
+
+- (void)handleClientDisconnectLockedForFd:(int)fd generation:(uint64_t)generation {
     if (fd < 0) {
         return;
     }
@@ -670,24 +682,26 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
 }
 
 - (void)sendMessage:(NSDictionary *)msg {
-    int fd = self.clientFd;
-    uint64_t generation = self.clientGeneration;
-    if (fd < 0) {
-        return;
-    }
-    NSError *error = nil;
-    NSData *data = [NSJSONSerialization dataWithJSONObject:msg options:0 error:&error];
-    if (!data) {
-        return;
-    }
-    if (![self writeAllToFd:fd bytes:data.bytes length:data.length]) {
-        [self handleClientDisconnectForFd:fd generation:generation];
-        return;
-    }
-    if (![self writeAllToFd:fd bytes:"\n" length:1]) {
-        [self handleClientDisconnectForFd:fd generation:generation];
-        return;
-    }
+    dispatch_async(self.ioQueue, ^{
+        int fd = self.clientFd;
+        uint64_t generation = self.clientGeneration;
+        if (fd < 0) {
+            return;
+        }
+        NSError *error = nil;
+        NSData *data = [NSJSONSerialization dataWithJSONObject:msg options:0 error:&error];
+        if (!data) {
+            return;
+        }
+        if (![self writeAllToFd:fd bytes:data.bytes length:data.length]) {
+            [self handleClientDisconnectLockedForFd:fd generation:generation];
+            return;
+        }
+        if (![self writeAllToFd:fd bytes:"\n" length:1]) {
+            [self handleClientDisconnectLockedForFd:fd generation:generation];
+            return;
+        }
+    });
 }
 
 #pragma mark - Helpers

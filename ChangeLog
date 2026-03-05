@@ -1,6 +1,19 @@
 ImpossiBLE ChangeLog
 ====================
 
+0.7 (2026-03-05)
+-----------------
+
+Transport serialization fix for simulator-helper socket traffic.
+
+* Serialize helper socket I/O through a dedicated queue to prevent
+  concurrent writes from interleaving JSON lines across delegate paths.
+* Serialize simulator-side outbound messages through a dedicated writer
+  queue and switch to full-write semantics (retry until all bytes are
+  written).
+* Prevents sporadic line corruption and frame truncation during
+  high-frequency BLE update bursts in simulator scans.
+
 0.6 (2026-03-05)
 -----------------
 
