@@ -4,27 +4,31 @@ struct DescriptorEditorView: View {
     @Binding var descriptor: MockDescriptor
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "doc.text")
-                .foregroundStyle(.purple)
-                .frame(width: 16, alignment: .trailing)
-                .font(.caption2)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text")
+                    .foregroundStyle(.purple)
+                    .frame(width: 14, alignment: .trailing)
+                    .font(.caption2)
+                Text(wellKnownName ?? "Descriptor")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+            }
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text(wellKnownName ?? "Descriptor")
-                        .font(.caption.weight(.medium))
-                    Spacer()
+            VStack(alignment: .leading, spacing: 6) {
+                EditorRow(title: "UUID", labelWidth: 64) {
                     TextField("UUID", text: $descriptor.uuid)
                         .font(.system(.caption, design: .monospaced))
-                        .multilineTextAlignment(.trailing)
-                        .frame(maxWidth: 120)
+                        .frame(maxWidth: 160)
                 }
-                TextField("Value (hex)", text: valueHexBinding)
-                    .font(.system(.caption, design: .monospaced))
+                EditorRow(title: "Value", labelWidth: 64) {
+                    TextField("Value (hex)", text: valueHexBinding)
+                        .font(.system(.caption, design: .monospaced))
+                }
             }
+            .padding(.leading, 20)
         }
-        .padding(.leading, 8)
+        .padding(.vertical, 6)
     }
 
     private var valueHexBinding: Binding<String> {

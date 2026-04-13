@@ -29,8 +29,8 @@ struct MockApp: App {
                 DeviceEditorWindowContent(deviceId: deviceId, store: store)
             }
             .background(DeviceEditorWindowActivator())
-            .frame(minWidth: 520, minHeight: 640)
+            .frame(minWidth: 720, minHeight: 760)
         }
-        .defaultSize(width: 520, height: 640)
+        .defaultSize(width: 760, height: 820)
     }
 }

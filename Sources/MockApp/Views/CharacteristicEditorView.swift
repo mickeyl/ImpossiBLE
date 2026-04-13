@@ -6,66 +6,69 @@ struct CharacteristicEditorView: View {
     @State private var isExpanded = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            Group {
-                HStack {
-                    Text("UUID")
-                        .foregroundStyle(.secondary)
+        EditorNestedBlock {
+            DisclosureGroup(isExpanded: $isExpanded) {
+                VStack(alignment: .leading, spacing: 12) {
+                    EditorDivider()
+
+                    EditorRow(title: "UUID", labelWidth: 96) {
+                        TextField("Char UUID", text: $characteristic.uuid)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(maxWidth: 260)
+                    }
+
+                    propertiesSection
+
+                    EditorRow(title: "Security", labelWidth: 96) {
+                        Picker("Security", selection: $characteristic.securityLevel) {
+                            ForEach(SecurityLevel.allCases, id: \.self) { level in
+                                Text(level.label).tag(level)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 260)
+                    }
+
+                    EditorRow(title: "Value", labelWidth: 96) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            TextField("e.g. 48656C6C6F", text: valueHexBinding)
+                                .font(.system(.body, design: .monospaced))
+                            if let data = characteristic.value, !data.isEmpty,
+                               let str = String(data: data, encoding: .utf8) {
+                                Text("UTF-8: \(str)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    descriptorsSection
+                }
+                .padding(.top, 8)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "tag")
+                        .foregroundStyle(.blue)
+                        .frame(width: 16, alignment: .trailing)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(wellKnownCharName ?? characteristic.uuid)
+                            .font(.caption.weight(.semibold))
+                        if wellKnownCharName != nil {
+                            Text(characteristic.uuid)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Spacer()
-                    TextField("Char UUID", text: $characteristic.uuid)
-                        .font(.system(.body, design: .monospaced))
-                        .multilineTextAlignment(.trailing)
-                        .frame(maxWidth: 200)
-                }
-
-                propertiesSection
-
-                Picker("Security", selection: $characteristic.securityLevel) {
-                    ForEach(SecurityLevel.allCases, id: \.self) { level in
-                        Text(level.label).tag(level)
+                    if characteristic.securityLevel != .none {
+                        Image(systemName: "lock.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
                     }
-                }
-                .font(.caption)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Value (hex)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    TextField("e.g. 48656C6C6F", text: valueHexBinding)
-                        .font(.system(.body, design: .monospaced))
-                    if let data = characteristic.value, !data.isEmpty,
-                       let str = String(data: data, encoding: .utf8) {
-                        Text("UTF-8: \(str)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                descriptorsSection
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "tag")
-                    .foregroundStyle(.blue)
-                    .frame(width: 16, alignment: .trailing)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(wellKnownCharName ?? characteristic.uuid)
-                        .font(.caption.weight(.medium))
-                    if wellKnownCharName != nil {
-                        Text(characteristic.uuid)
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-                if characteristic.securityLevel != .none {
-                    Image(systemName: "lock.fill")
+                    Text(propertiesSummary)
                         .font(.caption2)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.secondary)
                 }
-                Text(propertiesSummary)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -73,11 +76,12 @@ struct CharacteristicEditorView: View {
     // MARK: - Properties
 
     private var propertiesSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Properties")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 4) {
+        EditorRow(title: "Properties", labelWidth: 96) {
+            LazyVGrid(
+                columns: [GridItem(.flexible()), GridItem(.flexible())],
+                alignment: .leading,
+                spacing: 6
+            ) {
                 ForEach(CharacteristicProperty.all) { prop in
                     Toggle(prop.name, isOn: propertyBinding(prop))
                         .toggleStyle(.checkbox)
@@ -134,19 +138,27 @@ struct CharacteristicEditorView: View {
     // MARK: - Descriptors
 
     private var descriptorsSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach($characteristic.descriptors) { $descriptor in
-                DescriptorEditorView(descriptor: $descriptor)
-            }
-            .onDelete { offsets in
-                characteristic.descriptors.remove(atOffsets: offsets)
-            }
+        EditorRow(title: "Descriptors", labelWidth: 96) {
+            VStack(alignment: .leading, spacing: 8) {
+                if characteristic.descriptors.isEmpty {
+                    Text("None")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach($characteristic.descriptors) { $descriptor in
+                        DescriptorEditorView(descriptor: $descriptor)
+                    }
+                    .onDelete { offsets in
+                        characteristic.descriptors.remove(atOffsets: offsets)
+                    }
+                }
 
-            Button {
-                characteristic.descriptors.append(MockDescriptor())
-            } label: {
-                Label("Add Descriptor", systemImage: "plus")
-                    .font(.caption)
+                Button {
+                    characteristic.descriptors.append(MockDescriptor())
+                } label: {
+                    Label("Add Descriptor", systemImage: "plus")
+                        .font(.caption)
+                }
             }
         }
     }

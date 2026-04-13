@@ -6,91 +6,96 @@ struct DeviceEditorView: View {
     var onSave: () -> Void
 
     var body: some View {
-        Form {
-            Section("Peripheral") {
-                TextField("Name", text: $device.name)
-                HStack {
-                    Text("UUID")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(device.id.uuidString)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                        .foregroundStyle(.secondary)
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(device.id.uuidString, forType: .string)
-                    } label: {
-                        Image(systemName: "doc.on.doc")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                EditorSection("Peripheral") {
+                    EditorRow(title: "Name") {
+                        TextField("Name", text: $device.name)
                     }
-                    .buttonStyle(.borderless)
-                    .help("Copy UUID")
-                }
-                HStack {
-                    Text("RSSI")
-                    Slider(value: rssiBinding, in: -100...0) {
-                        Text("RSSI")
+
+                    EditorRow(title: "UUID") {
+                        HStack(spacing: 8) {
+                            Text(device.id.uuidString)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                                .foregroundStyle(.secondary)
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(device.id.uuidString, forType: .string)
+                            } label: {
+                                Image(systemName: "doc.on.doc")
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Copy UUID")
+                        }
                     }
-                    Text("\(device.rssi) dBm")
-                        .font(.system(.caption, design: .monospaced))
-                        .frame(width: 60, alignment: .trailing)
-                }
-                Toggle("Connectable", isOn: $device.isConnectable)
-            }
 
-            Section("Pairing") {
-                Picker("Mode", selection: $device.pairingMode) {
-                    ForEach(PairingMode.allCases, id: \.self) { mode in
-                        Text(mode.label).tag(mode)
+                    EditorRow(title: "RSSI") {
+                        HStack(spacing: 12) {
+                            Slider(value: rssiBinding, in: -100...0)
+                            Text("\(device.rssi) dBm")
+                                .font(.system(.caption, design: .monospaced))
+                                .frame(width: 60, alignment: .trailing)
+                        }
+                    }
+
+                    EditorRow(title: "Connectable") {
+                        Toggle("Connectable", isOn: $device.isConnectable)
+                            .labelsHidden()
                     }
                 }
-                if device.pairingMode == .passkey {
-                    TextField("Passkey (6 digits)", text: $device.passkey)
-                        .font(.system(.body, design: .monospaced))
-                }
-            }
 
-            Section("Advertisement") {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Service UUIDs")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    TextField("e.g. 180A, 180D", text: advertisedUUIDsBinding)
-                        .font(.system(.body, design: .monospaced))
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Manufacturer Data (hex)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    TextField("e.g. FF010203", text: manufacturerDataBinding)
-                        .font(.system(.body, design: .monospaced))
-                }
-            }
-
-            Section {
-                ForEach($device.services) { $service in
-                    ServiceEditorView(service: $service, peripheralUUID: device.id.uuidString)
-                }
-                .onDelete { offsets in
-                    device.services.remove(atOffsets: offsets)
+                EditorSection("Pairing") {
+                    EditorRow(title: "Mode") {
+                        Picker("Mode", selection: $device.pairingMode) {
+                            ForEach(PairingMode.allCases, id: \.self) { mode in
+                                Text(mode.label).tag(mode)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 260)
+                    }
+                    if device.pairingMode == .passkey {
+                        EditorRow(title: "Passkey") {
+                            TextField("6 digits", text: $device.passkey)
+                                .font(.system(.body, design: .monospaced))
+                                .frame(maxWidth: 180)
+                        }
+                    }
                 }
 
-                Button {
-                    device.services.append(MockService())
-                } label: {
-                    Label("Add Service", systemImage: "plus")
+                EditorSection("Advertisement") {
+                    EditorRow(title: "Service UUIDs") {
+                        TextField("e.g. 180A, 180D", text: advertisedUUIDsBinding)
+                            .font(.system(.body, design: .monospaced))
+                    }
+                    EditorDivider()
+                    EditorRow(title: "Manufacturer Data") {
+                        TextField("e.g. FF010203", text: manufacturerDataBinding)
+                            .font(.system(.body, design: .monospaced))
+                    }
                 }
-            } header: {
-                HStack {
-                    Text("Services")
-                    Spacer()
-                    Text("\(device.services.count)")
-                        .foregroundStyle(.secondary)
+
+                EditorSection("Services", trailingText: "\(device.services.count)") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach($device.services) { $service in
+                            ServiceEditorView(service: $service, peripheralUUID: device.id.uuidString)
+                        }
+                        .onDelete { offsets in
+                            device.services.remove(atOffsets: offsets)
+                        }
+
+                        Button {
+                            device.services.append(MockService())
+                        } label: {
+                            Label("Add Service", systemImage: "plus")
+                        }
+                    }
                 }
             }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.visible)
         .navigationTitle(device.name)
         .onChange(of: device) { _, _ in
             onSave()

@@ -25,6 +25,7 @@ let package = Package(
                 "Views/DeviceEditorView.swift",
                 "Views/ServiceEditorView.swift",
                 "Views/MockMenuContent.swift",
+                "Views/EditorLayout.swift",
                 "Views/FontAwesome.swift"
             ],
             resources: [
