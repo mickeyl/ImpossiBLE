@@ -1,6 +1,26 @@
 ImpossiBLE ChangeLog
 ====================
 
+0.8 (2026-04-13)
+-----------------
+
+Configurable mock provider and sample app usability release.
+
+* Add the ImpossiBLE Mock menu bar app for serving configurable virtual
+  BLE peripherals through the same `/tmp/impossible.sock` provider
+  socket as the real hardware helper.
+* Add stock mock configurations, including a dense multi-device sensor
+  environment, and persist user-defined mock devices/configurations.
+* Add pairing/security simulation controls for mock devices and
+  characteristics.
+* Improve mock editor window activation, visual hierarchy, spacing, and
+  RSSI editing.
+* Improve the iOS sample app with a shared full-screen log, inline
+  navigation titles, toolbar scan/log actions, and sorted discovery/GATT
+  lists.
+* Bump the iOS sample minimum deployment target to iOS 18 and the mock
+  app minimum macOS version to macOS 15.
+
 0.7 (2026-03-05)
 -----------------
 
