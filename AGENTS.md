@@ -2,7 +2,7 @@
 
 ## Project Shape
 
-- `Sources/ImpossiBLE` is the simulator-side Swift package library. It swizzles CoreBluetooth APIs and sends newline-delimited JSON to `/tmp/impossible.sock`.
+- `Sources/ImpossiBLE` is the simulator-side Swift package library. It swizzles CoreBluetooth APIs and sends newline-delimited JSON to `/tmp/impossible.sock`. The connection layer (`CBSConnection`) auto-reconnects and drives `CBManagerState` transitions (`poweredOn`/`poweredOff`) based on socket connectivity.
 - `Sources/Helper` builds `impossible-helper.app`, the host-side forwarding provider that talks to real Mac Bluetooth hardware.
 - `Sources/MockApp` builds `ImpossiBLE-Mock.app`, the host-side menu bar provider that serves configurable virtual BLE peripherals. It has its own `Package.swift` and is built via `swift build` (SPM). Font resources (FontAwesome Brands) are bundled via SPM resource rules.
 - `SampleApp` is an iOS sample Xcode project that imports the local package and uses normal CoreBluetooth APIs.

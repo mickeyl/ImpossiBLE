@@ -35,31 +35,20 @@ static NSMutableDictionary<NSString *, CBSChannel *> *gL2CAPChannels;
 static NSMutableDictionary<NSString *, dispatch_source_t> *gL2CAPReadSources;
 static NSMutableDictionary<NSString *, NSNumber *> *gL2CAPFds;
 
-#pragma mark - Helper Check
+#pragma mark - State Change Notification
 
-static void cbs_check_helper(void) {
-    // The helper cannot be auto-launched from within the simulator process
-    // because child processes inherit the simulator's Mach bootstrap namespace,
-    // where XPC services (CoreBluetooth) are unavailable.
-    // Start it from the host: make -C ~/Documents/late/ImpossiBLE watch
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) {
-        NSLog(@"ImpossiBLE: WARNING — socket() failed, helper not reachable");
-        return;
+static void cbs_notify_all_centrals_state_changed(void) {
+    NSArray *centrals = gCentrals.allObjects;
+    for (CBCentralManager *central in centrals) {
+        id delegate = central.delegate;
+        if (delegate && [delegate respondsToSelector:@selector(centralManagerDidUpdateState:)]) {
+            dispatch_queue_t q = objc_getAssociatedObject(central, kCBSDelegateQueueKey);
+            if (!q) q = dispatch_get_main_queue();
+            dispatch_async(q, ^{
+                [delegate centralManagerDidUpdateState:central];
+            });
+        }
     }
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, "/tmp/impossible.sock", sizeof(addr.sun_path) - 1);
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
-        close(fd);
-        NSLog(@"ImpossiBLE: helper is running");
-        return;
-    }
-    close(fd);
-    NSLog(@"ImpossiBLE: WARNING — helper is NOT running. "
-          "Start it from Terminal or add an Xcode pre-action: "
-          "open -a \"$HOME/.local/bin/impossible-helper.app\"");
 }
 
 #pragma mark - Callback Dispatch
@@ -1583,7 +1572,7 @@ static id cbs_init_plain(id self, SEL _cmd) {
 
 static CBManagerState (*orig_state)(id, SEL);
 static CBManagerState cbs_state(id self, SEL _cmd) {
-    return CBManagerStatePoweredOn;
+    return CBSConnectionIsConnected() ? CBManagerStatePoweredOn : CBManagerStatePoweredOff;
 }
 
 static CBManagerAuthorization (*orig_authorization)(id, SEL);
@@ -1814,7 +1803,11 @@ static void cbs_swizzle_class(Class cls, SEL sel, IMP imp, IMP *orig_out) {
         cbs_handle_message(msg);
     });
 
-    cbs_check_helper();
+    CBSConnectionSetStateHandler(^(BOOL connected) {
+        cbs_notify_all_centrals_state_changed();
+    });
+
+    CBSConnectionOpen();
 
     cbs_swizzle(cls, @selector(initWithDelegate:queue:options:), (IMP)cbs_init, (IMP *)&orig_init);
     cbs_swizzle(cls, @selector(initWithDelegate:queue:), (IMP)cbs_init_noopts, (IMP *)&orig_init_noopts);

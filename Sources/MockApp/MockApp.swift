@@ -9,11 +9,6 @@ struct MockApp: App {
         MenuBarExtra {
             MockMenuContent(store: store, server: server)
                 .frame(width: 360, height: 520)
-                .onAppear {
-                    if MockServer.wasRunning && server.status == .stopped {
-                        server.start()
-                    }
-                }
         } label: {
             Image(nsImage: FontAwesome.brandImage(
                 FontAwesome.bluetoothB,

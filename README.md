@@ -29,7 +29,8 @@ Your app code remains unchanged -- `CBCentralManager`, `CBPeripheral`, delegate 
 - **Method swizzling on the simulator**: the library swizzles `CBCentralManager` init/state/scan/connect APIs and routes them to a local transport.
 - **Multi-central multiplexing**: multiple `CBCentralManager` instances in the same app work independently, each with its own peripheral store, scan filters, and delegate callbacks -- matching real CoreBluetooth behavior where peripherals and their discovered services are shared across managers.
 - **Proxy CoreBluetooth objects**: it creates shim `CBPeripheral`, `CBService`, `CBCharacteristic`, `CBDescriptor`, and `CBL2CAPChannel` objects so your app sees real types.
-- **Transport**: newline-delimited JSON over a Unix domain socket (`/tmp/impossible.sock`).
+- **Transport**: newline-delimited JSON over a Unix domain socket (`/tmp/impossible.sock`), with auto-reconnect.
+- **Connection-aware state**: `CBCentralManager.state` reflects actual socket connectivity -- `poweredOn` when connected to a provider, `poweredOff` when not. `centralManagerDidUpdateState:` fires automatically on transitions, so your app reacts to the helper/mock starting or stopping just like it would to real Bluetooth state changes.
 - **Data encoding**: characteristic values and L2CAP payloads are base64-encoded across the wire.
 - **Service filter fidelity**: the helper enforces `discoverServices:` filters to match iOS behavior, even though macOS CoreBluetooth returns all cached services.
 - **Callback fidelity**: delegate callbacks are dispatched back onto the original `CBCentralManager` delegate queue.
@@ -42,6 +43,8 @@ Your app code remains unchanged -- `CBCentralManager`, `CBPeripheral`, delegate 
 - Discover services, characteristics, and descriptors
 - Read, write (with/without response), and notify
 - L2CAP channel support (with timeout handling)
+- Connection-aware `CBManagerState` with automatic `centralManagerDidUpdateState:` callbacks
+- Auto-reconnect when the provider starts after the app
 - Automatic `+load` activation -- no setup code required
 
 ## Requirements
@@ -119,7 +122,7 @@ That is all. The library activates automatically via `+load` on simulator builds
 
 - **Central role only** -- peripheral/broadcaster mode is not supported.
 - **Single simulator app** -- only one simulator app can connect to the helper at a time. A new client connection replaces the existing one; the previous client is dropped and the helper tears down scans, connections, and L2CAP channels. Multiple `CBCentralManager` instances within a single app are fully supported.
-- **Helper must be running** -- start it before launching your app in the simulator.
+- **Provider must be running** -- the library auto-reconnects every 2 seconds, so you can start the helper or mock app before or after your simulator app. Until connected, `CBCentralManager.state` reports `poweredOff`.
 
 ## Roadmap to 1.0 (Goal: 100% CoreBluetooth Coverage)
 
@@ -128,10 +131,10 @@ The goal is full CoreBluetooth API coverage in the simulator. Real-device testin
 - [ ] **Peripheral role support** (advertising, GATT server, write/notify from the peripheral side).
 - [ ] **Multiple simulator clients** (concurrent apps connecting to the helper).
 - [x] **Full descriptor support** (discover/read/write descriptors beyond characteristics).
-- [ ] **Improved state/authorization fidelity** (authorization states, feature gating, and error codes matching device behavior).
+- [ ] **Improved state/authorization fidelity** (authorization states, feature gating, and error codes matching device behavior). `CBManagerState` now tracks socket connectivity; remaining work is authorization edge cases.
 - [ ] **State restoration parity** (`CBCentralManager` restoration flows).
 - [ ] **Pairing / security flows** (bonding, encryption-required characteristics, and relevant errors).
-- [ ] **Performance + robustness** (larger payloads, stress testing, graceful reconnects, helper auto-restart).
+- [ ] **Performance + robustness** (larger payloads, stress testing). Auto-reconnect is now implemented.
 - [ ] **Configurable mocking schemes** (scriptable scan/connect/service/characteristic responses and fault injection to enable deterministic tests without real hardware).
 
 ## License
