@@ -1,5 +1,7 @@
 .build/
 .swiftpm/
 *.app
+*.dSYM
+ImpossiBLE-Mock.zip
 .DS_Store
 xcuserdata/

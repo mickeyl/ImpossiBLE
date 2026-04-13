@@ -20,6 +20,8 @@ ImpossiBLE is a two-process architecture:
 
 2. **Helper** (runs natively on macOS) -- A lightweight background app that listens on `/tmp/impossible.sock`, translates the JSON messages into real `CoreBluetooth` API calls, and sends results back.
 
+The repo also includes a mock menu bar app that listens on the same socket and serves configurable virtual BLE peripherals. Use either the real helper or the mock app at one time, since both own `/tmp/impossible.sock`.
+
 Your app code remains unchanged -- `CBCentralManager`, `CBPeripheral`, delegate callbacks, and all other CoreBluetooth types work as expected.
 
 ### Under the Hood (Technical Details)
@@ -63,6 +65,24 @@ make run
 # then build and run your app in the iOS Simulator.
 ```
 
+## Forwarding vs Mocking
+
+The iOS app always uses the same ImpossiBLE integration and connects to `/tmp/impossible.sock`. Switching modes is done by choosing which macOS app owns that socket:
+
+```bash
+# Forwarding mode: simulator app -> real Mac Bluetooth hardware
+make mock-stop
+make run
+```
+
+```bash
+# Mocking mode: simulator app -> virtual BLE devices from the menu bar app
+make stop
+make mock-run
+```
+
+Run only one provider at a time. The background helper and the mock menu bar app are mutually exclusive because both listen on `/tmp/impossible.sock`.
+
 ## Makefile Targets
 
 | Target    | Description                                        |
@@ -72,7 +92,18 @@ make run
 | `run`     | Install and start (if not already running)         |
 | `restart` | Install, kill existing helper, and relaunch         |
 | `watch`   | Install, start, and auto-rebuild on source changes |
+| `mock`    | Build the mock menu bar `.app` bundle              |
+| `mock-run`| Install and start the mock menu bar app            |
+| `mock-assess` | Verify signing and Gatekeeper assessment      |
+| `mock-notarize` | Notarize and staple the mock menu bar app   |
 | `clean`   | Remove local build artifacts                       |
+
+For local development, the mock app falls back to ad-hoc signing if no identity matches `MOCK_CODESIGN_MATCH`. Gatekeeper will reject ad-hoc signed copies that are quarantined or distributed. For a distributable mock app, build with a Developer ID Application certificate, for example:
+
+```bash
+make mock MOCK_CODESIGN_MATCH="Developer ID Application"
+make mock-notarize NOTARY_PROFILE="impossible-notary"
+```
 
 ## Integration
 
