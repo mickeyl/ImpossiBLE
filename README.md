@@ -20,7 +20,7 @@ ImpossiBLE is a two-process architecture:
 
 2. **Helper** (runs natively on macOS) -- A lightweight background app that listens on `/tmp/impossible.sock`, translates the JSON messages into real `CoreBluetooth` API calls, and sends results back.
 
-The repo also includes a mock menu bar app that listens on the same socket and serves configurable virtual BLE peripherals. Use either the real helper or the mock app at one time, since both own `/tmp/impossible.sock`.
+The repo also includes a **mock menu bar app** that listens on the same socket and serves configurable virtual BLE peripherals. The menu bar icon (Bluetooth logo via FontAwesome) flashes on socket traffic so you can see activity at a glance. The mock app ships with several stock configurations -- from a single heart rate monitor to a dense 12-device sensor environment -- and lets you save/load your own. Server state is persisted and auto-restored on launch. Use either the real helper or the mock app at one time, since both own `/tmp/impossible.sock`.
 
 Your app code remains unchanged -- `CBCentralManager`, `CBPeripheral`, delegate callbacks, and all other CoreBluetooth types work as expected.
 

@@ -4,7 +4,7 @@
 
 - `Sources/ImpossiBLE` is the simulator-side Swift package library. It swizzles CoreBluetooth APIs and sends newline-delimited JSON to `/tmp/impossible.sock`.
 - `Sources/Helper` builds `impossible-helper.app`, the host-side forwarding provider that talks to real Mac Bluetooth hardware.
-- `Sources/MockApp` builds `ImpossiBLE-Mock.app`, the host-side menu bar provider that serves configurable virtual BLE peripherals.
+- `Sources/MockApp` builds `ImpossiBLE-Mock.app`, the host-side menu bar provider that serves configurable virtual BLE peripherals. It has its own `Package.swift` and is built via `swift build` (SPM). Font resources (FontAwesome Brands) are bundled via SPM resource rules.
 - `SampleApp` is an iOS sample Xcode project that imports the local package and uses normal CoreBluetooth APIs.
 
 ## Forwarding vs Mocking
@@ -31,6 +31,7 @@ Use these checks before preparing changes for commit:
 
 ```bash
 make mock-clean mock
+cd Sources/MockApp && swift build   # standalone SPM check
 xcodebuild -project SampleApp/SampleApp.xcodeproj -scheme SampleApp -sdk iphonesimulator -configuration Debug -destination 'generic/platform=iOS Simulator' build
 plutil -lint Sources/MockApp/Resources/Info.plist Sources/MockApp/Resources/entitlements.plist Sources/Helper/Info.plist Sources/Helper/entitlements.plist
 ```
