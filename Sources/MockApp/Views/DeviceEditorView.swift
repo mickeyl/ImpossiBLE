@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct DeviceEditorView: View {
     @Binding var device: MockDevice
@@ -27,7 +28,7 @@ struct DeviceEditorView: View {
                 }
                 HStack {
                     Text("RSSI")
-                    Slider(value: rssiBinding, in: -100...0, step: 1) {
+                    Slider(value: rssiBinding, in: -100...0) {
                         Text("RSSI")
                     }
                     Text("\(device.rssi) dBm")
@@ -99,7 +100,7 @@ struct DeviceEditorView: View {
     private var rssiBinding: Binding<Double> {
         Binding(
             get: { Double(device.rssi) },
-            set: { device.rssi = Int($0) }
+            set: { device.rssi = Int($0.rounded()) }
         )
     }
 
@@ -132,5 +133,64 @@ struct DeviceEditorView: View {
                 device.manufacturerData = data.isEmpty ? nil : data
             }
         )
+    }
+}
+
+struct DeviceEditorWindowContent: View {
+    let deviceId: UUID?
+    @ObservedObject var store: MockStore
+
+    var body: some View {
+        if let deviceId, let idx = store.devices.firstIndex(where: { $0.id == deviceId }) {
+            DeviceEditorView(device: $store.devices[idx], onSave: { store.save() })
+        } else {
+            VStack(spacing: 12) {
+                Image(systemName: "antenna.radiowaves.left.and.right.slash")
+                    .font(.largeTitle)
+                    .foregroundStyle(.secondary)
+                Text("Device no longer exists")
+                    .font(.headline)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+struct DeviceEditorWindowActivator: NSViewRepresentable {
+    final class Coordinator {
+        var didActivate = false
+        var attempts = 0
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        activateWhenReady(view, coordinator: context.coordinator)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        activateWhenReady(nsView, coordinator: context.coordinator)
+    }
+
+    private func activateWhenReady(_ view: NSView, coordinator: Coordinator) {
+        guard !coordinator.didActivate, coordinator.attempts < 20 else { return }
+        coordinator.attempts += 1
+
+        DispatchQueue.main.async {
+            guard let window = view.window else {
+                activateWhenReady(view, coordinator: coordinator)
+                return
+            }
+
+            coordinator.didActivate = true
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+            NSRunningApplication.current.activate(options: [.activateAllWindows])
+            NSApplication.shared.activate()
+        }
     }
 }

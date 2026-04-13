@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct MockMenuContent: View {
     @ObservedObject var store: MockStore
@@ -330,7 +331,6 @@ struct MockMenuContent: View {
 
             Button("Quit") {
                 server.stop()
-                EditorWindowController.shared.closeAll()
                 NSApplication.shared.terminate(nil)
             }
             .font(.caption)
@@ -347,6 +347,8 @@ struct DeviceRow: View {
     @Binding var device: MockDevice
     @ObservedObject var store: MockStore
     @ObservedObject var server: MockServer
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
 
     private var isConnected: Bool {
         server.connectedDeviceIDs.contains(device.id.uuidString)
@@ -390,7 +392,7 @@ struct DeviceRow: View {
             Spacer()
 
             Button {
-                EditorWindowController.shared.openEditor(for: device.id, store: store)
+                openEditor()
             } label: {
                 Label("Edit", systemImage: "pencil")
                     .font(.caption)
@@ -413,7 +415,7 @@ struct DeviceRow: View {
         .contentShape(Rectangle())
         .contextMenu {
             Button("Edit\u{2026}") {
-                EditorWindowController.shared.openEditor(for: device.id, store: store)
+                openEditor()
             }
             Button("Duplicate") {
                 store.duplicateDevice(id: device.id)
@@ -422,6 +424,15 @@ struct DeviceRow: View {
             Button("Delete", role: .destructive) {
                 store.deleteDevice(id: device.id)
             }
+        }
+    }
+
+    private func openEditor() {
+        let deviceId = device.id
+        dismiss()
+        DispatchQueue.main.async {
+            openWindow(value: deviceId)
+            NSRunningApplication.current.activate(options: [.activateAllWindows])
         }
     }
 }

@@ -299,114 +299,114 @@ extension CBManagerState {
 struct ScanView: View {
     @StateObject private var ble = BLEManager()
     @State private var path = NavigationPath()
+    @State private var isLogPresented = false
 
     var body: some View {
         NavigationStack(path: $path) {
-        List {
-            Section {
-                HStack {
-                    Circle()
-                        .fill(ble.state == .poweredOn ? .green : .red)
-                        .frame(width: 8, height: 8)
-                    Text("Bluetooth: \(ble.state.name)")
-                    Spacer()
-                    if ble.isScanning {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                }
-            }
-
-            if let connected = ble.connectedPeripheral {
-                Section("Connected") {
-                    NavigationLink {
-                        PeripheralDetailView(ble: ble)
-                    } label: {
-                        VStack(alignment: .leading) {
-                            Text(connected.name ?? connected.identifier.uuidString)
-                                .font(.headline)
-                            Text(connected.identifier.uuidString)
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(.secondary)
+            List {
+                Section {
+                    HStack {
+                        Circle()
+                            .fill(ble.state == .poweredOn ? .green : .red)
+                            .frame(width: 8, height: 8)
+                        Text("Bluetooth: \(ble.state.name)")
+                        Spacer()
+                        if ble.isScanning {
+                            ProgressView()
+                                .controlSize(.small)
                         }
                     }
-                    Button("Disconnect", role: .destructive) {
-                        ble.disconnect()
-                    }
                 }
-            }
 
-            Section("Discovered (\(ble.discovered.count))") {
-                if ble.discovered.isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: ble.isScanning ? "dot.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
-                            .font(.title2)
-                            .foregroundStyle(.secondary)
-                        Text(ble.isScanning ? "Scanning" : "No Peripherals")
-                            .font(.subheadline.weight(.medium))
-                        Text(ble.isScanning ? "Nearby peripherals will appear here." : "Start a scan after the mock server is listening.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                } else {
-                    ForEach(ble.discovered) { device in
-                        Button {
-                            ble.connect(device.peripheral)
+                if let connected = ble.connectedPeripheral {
+                    Section("Connected") {
+                        NavigationLink {
+                            PeripheralDetailView(ble: ble, isLogPresented: $isLogPresented)
                         } label: {
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text(device.name)
-                                        .font(.subheadline.weight(.medium))
-                                    Text(device.id.uuidString)
-                                        .font(.caption2.monospaced())
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Text("\(device.rssi) dBm")
-                                    .font(.caption.monospaced())
+                            VStack(alignment: .leading) {
+                                Text(connected.name ?? connected.identifier.uuidString)
+                                    .font(.headline)
+                                Text(connected.identifier.uuidString)
+                                    .font(.caption2.monospaced())
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        .tint(.primary)
+                        Button("Disconnect", role: .destructive) {
+                            ble.disconnect()
+                        }
                     }
                 }
-            }
 
-            Section("Log") {
-                ForEach(ble.log) { entry in
-                    HStack(alignment: .top, spacing: 6) {
-                        Text(entry.timestamp, format: .dateTime.hour().minute().second().secondFraction(.fractional(2)))
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
-                        Text(entry.message)
-                            .font(.caption)
+                Section("Discovered (\(ble.discovered.count))") {
+                    if ble.discovered.isEmpty {
+                        VStack(spacing: 8) {
+                            Image(systemName: ble.isScanning ? "dot.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
+                                .font(.title2)
+                                .foregroundStyle(.secondary)
+                            Text(ble.isScanning ? "Scanning" : "No Peripherals")
+                                .font(.subheadline.weight(.medium))
+                            Text(ble.isScanning ? "Nearby peripherals will appear here." : "Start a scan after the mock server is listening.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                    } else {
+                        ForEach(discoveredBySignalStrength) { device in
+                            Button {
+                                ble.connect(device.peripheral)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(device.name)
+                                            .font(.subheadline.weight(.medium))
+                                        Text(device.id.uuidString)
+                                            .font(.caption2.monospaced())
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Text("\(device.rssi) dBm")
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .tint(.primary)
+                        }
                     }
                 }
             }
-        }
-        .navigationTitle("ImpossiBLE Sample")
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button(ble.isScanning ? "Stop" : "Scan") {
-                    ble.isScanning ? ble.stopScan() : ble.startScan()
+            .navigationTitle("ImpossiBLE Sample")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                LogToolbarItem(isLogPresented: $isLogPresented)
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(ble.isScanning ? "Stop" : "Scan") {
+                        ble.isScanning ? ble.stopScan() : ble.startScan()
+                    }
+                    .disabled(ble.state != .poweredOn)
                 }
-                .disabled(ble.state != .poweredOn)
             }
-            ToolbarItem(placement: .secondaryAction) {
-                Button("Clear Log") {
-                    ble.clearLog()
+            .onChange(of: ble.state) { _, newState in
+                if newState != .poweredOn {
+                    path = NavigationPath()
                 }
-                .disabled(ble.log.isEmpty)
             }
         }
-        .onChange(of: ble.state) { newState in
-            if newState != .poweredOn {
-                path = NavigationPath()
-            }
+        .fullScreenCover(isPresented: $isLogPresented) {
+            LogSheetView(ble: ble)
         }
+    }
+
+    private var discoveredBySignalStrength: [BLEManager.DiscoveredPeripheral] {
+        ble.discovered.sorted { lhs, rhs in
+            if lhs.rssi != rhs.rssi {
+                return lhs.rssi > rhs.rssi
+            }
+            if lhs.name != rhs.name {
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+            return lhs.id.uuidString < rhs.id.uuidString
         }
     }
 }
@@ -415,6 +415,7 @@ struct ScanView: View {
 
 struct PeripheralDetailView: View {
     @ObservedObject var ble: BLEManager
+    @Binding var isLogPresented: Bool
 
     var body: some View {
         List {
@@ -423,14 +424,19 @@ struct PeripheralDetailView: View {
                 Button("Read RSSI") { ble.readRSSI() }
             }
 
-            ForEach(ble.services, id: \.uuid) { service in
+            ForEach(servicesByUUID, id: \.uuid) { service in
                 Section {
                     serviceHeader(service)
 
-                    if let chars = service.characteristics, !chars.isEmpty {
-                        ForEach(chars, id: \.uuid) { ch in
+                    let characteristics = characteristicsByUUID(for: service)
+                    if !characteristics.isEmpty {
+                        ForEach(characteristics, id: \.uuid) { ch in
                             NavigationLink {
-                                CharacteristicDetailView(ble: ble, characteristic: ch)
+                                CharacteristicDetailView(
+                                    ble: ble,
+                                    characteristic: ch,
+                                    isLogPresented: $isLogPresented
+                                )
                             } label: {
                                 characteristicRow(ch)
                             }
@@ -443,20 +449,20 @@ struct PeripheralDetailView: View {
                     }
                 }
             }
-
-            Section("Log") {
-                ForEach(ble.log.prefix(50)) { entry in
-                    HStack(alignment: .top, spacing: 6) {
-                        Text(entry.timestamp, format: .dateTime.hour().minute().second().secondFraction(.fractional(2)))
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
-                        Text(entry.message)
-                            .font(.caption)
-                    }
-                }
-            }
         }
         .navigationTitle(ble.connectedPeripheral?.name ?? "Peripheral")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            LogToolbarItem(isLogPresented: $isLogPresented)
+        }
+    }
+
+    private var servicesByUUID: [CBService] {
+        ble.services.sortedByUUID()
+    }
+
+    private func characteristicsByUUID(for service: CBService) -> [CBCharacteristic] {
+        (service.characteristics ?? []).sortedByUUID()
     }
 
     @ViewBuilder
@@ -496,6 +502,7 @@ struct PeripheralDetailView: View {
 struct CharacteristicDetailView: View {
     @ObservedObject var ble: BLEManager
     let characteristic: CBCharacteristic
+    @Binding var isLogPresented: Bool
     @State private var writeHex = ""
 
     var body: some View {
@@ -566,7 +573,8 @@ struct CharacteristicDetailView: View {
                 }
             }
 
-            if let descriptors = characteristic.descriptors, !descriptors.isEmpty {
+            let descriptors = descriptorsByUUID
+            if !descriptors.isEmpty {
                 Section("Descriptors") {
                     ForEach(descriptors, id: \.uuid) { desc in
                         VStack(alignment: .leading, spacing: 2) {
@@ -585,24 +593,89 @@ struct CharacteristicDetailView: View {
                     }
                 }
             }
-
-            Section("Log") {
-                ForEach(ble.log.prefix(30)) { entry in
-                    HStack(alignment: .top, spacing: 6) {
-                        Text(entry.timestamp, format: .dateTime.hour().minute().second().secondFraction(.fractional(2)))
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
-                        Text(entry.message)
-                            .font(.caption)
-                    }
-                }
-            }
         }
         .navigationTitle(characteristic.uuid.uuidString)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            LogToolbarItem(isLogPresented: $isLogPresented)
+        }
     }
 
     private var isWriteHexValid: Bool {
         hexToData(writeHex) != nil
+    }
+
+    private var descriptorsByUUID: [CBDescriptor] {
+        (characteristic.descriptors ?? []).sortedByUUID()
+    }
+}
+
+// MARK: - Log Sheet
+
+struct LogSheetView: View {
+    @ObservedObject var ble: BLEManager
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if ble.log.isEmpty {
+                    ContentUnavailableView(
+                        "No Log Entries",
+                        systemImage: "doc.text",
+                        description: Text("Bluetooth events will appear here.")
+                    )
+                } else {
+                    ForEach(ble.log) { entry in
+                        LogEntryRow(entry: entry)
+                    }
+                }
+            }
+            .navigationTitle("Log")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Clear") {
+                        ble.clearLog()
+                    }
+                    .disabled(ble.log.isEmpty)
+                }
+            }
+        }
+    }
+}
+
+struct LogEntryRow: View {
+    let entry: BLEManager.LogEntry
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(entry.timestamp, format: .dateTime.hour().minute().second().secondFraction(.fractional(2)))
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+            Text(entry.message)
+                .font(.caption)
+        }
+    }
+}
+
+struct LogToolbarItem: ToolbarContent {
+    @Binding var isLogPresented: Bool
+
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                isLogPresented = true
+            } label: {
+                Label("Log", systemImage: "doc.text")
+            }
+            .accessibilityLabel("Show Log")
+        }
     }
 }
 
@@ -619,6 +692,22 @@ func propertiesString(_ props: CBCharacteristicProperties) -> String {
     if props.contains(.authenticatedSignedWrites) { parts.append("SignedWrite") }
     if props.contains(.extendedProperties)     { parts.append("ExtProps") }
     return parts.isEmpty ? "None" : parts.joined(separator: ", ")
+}
+
+private protocol CBUUIDSortable {
+    var uuid: CBUUID { get }
+}
+
+extension CBService: CBUUIDSortable {}
+extension CBCharacteristic: CBUUIDSortable {}
+extension CBDescriptor: CBUUIDSortable {}
+
+private extension Array where Element: CBUUIDSortable {
+    func sortedByUUID() -> [Element] {
+        sorted { lhs, rhs in
+            lhs.uuid.uuidString.localizedStandardCompare(rhs.uuid.uuidString) == .orderedAscending
+        }
+    }
 }
 
 func hexToData(_ hex: String) -> Data? {

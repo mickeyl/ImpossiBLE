@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "ImpossiBLE-Mock",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("15.0")],
     dependencies: [],
     targets: [
         .executableTarget(
@@ -25,7 +25,6 @@ let package = Package(
                 "Views/DeviceEditorView.swift",
                 "Views/ServiceEditorView.swift",
                 "Views/MockMenuContent.swift",
-                "Views/EditorWindowController.swift",
                 "Views/FontAwesome.swift"
             ],
             resources: [
