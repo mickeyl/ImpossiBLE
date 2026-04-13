@@ -5,7 +5,7 @@ struct MockMenuContent: View {
     @ObservedObject var server: MockServer
     @State private var showConfigs = false
     @State private var saveConfigName = ""
-    @State private var showSaveAlert = false
+    @State private var showSaveField = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,29 +16,15 @@ struct MockMenuContent: View {
 
             if showConfigs {
                 configList
-            } else {
-                deviceList
+                Divider()
             }
+            deviceList
 
             Divider()
             footer
         }
         .onAppear {
             server.store = store
-        }
-        .alert("Save Configuration", isPresented: $showSaveAlert) {
-            TextField("Configuration name", text: $saveConfigName)
-            Button("Save") {
-                let name = saveConfigName.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !name.isEmpty else { return }
-                store.saveCurrentAsConfiguration(name: name)
-                store.activeConfigurationName = name
-                saveConfigName = ""
-            }
-            .disabled(saveConfigName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel", role: .cancel) { saveConfigName = "" }
-        } message: {
-            Text("Enter a name for this configuration.")
         }
     }
 
@@ -47,8 +33,7 @@ struct MockMenuContent: View {
     private var header: some View {
         VStack(spacing: 8) {
             HStack {
-                Image(systemName: "antenna.radiowaves.left.and.right")
-                    .font(.title2.weight(.semibold))
+                Image(nsImage: FontAwesome.brandImage(FontAwesome.bluetoothB, size: 18))
                     .foregroundStyle(statusColor)
                     .frame(width: 24)
                 VStack(alignment: .leading, spacing: 2) {
@@ -121,45 +106,87 @@ struct MockMenuContent: View {
     // MARK: - Configuration Bar
 
     private var configBar: some View {
-        HStack(spacing: 6) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    showConfigs.toggle()
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: showConfigs ? "chevron.down" : "chevron.right")
-                        .font(.caption2)
-                    Image(systemName: "folder")
-                        .font(.caption)
-                    if !store.activeConfigurationName.isEmpty {
-                        Text(store.activeConfigurationName)
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        showConfigs.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: showConfigs ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                        Image(systemName: "folder")
                             .font(.caption)
-                            .lineLimit(1)
-                    } else {
-                        Text("Configurations")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        if !store.activeConfigurationName.isEmpty {
+                            Text(store.activeConfigurationName)
+                                .font(.caption)
+                                .lineLimit(1)
+                        } else {
+                            Text("Configurations")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
-            }
-            .buttonStyle(.plain)
+                .buttonStyle(.plain)
 
-            Spacer()
+                Spacer()
 
-            Button {
-                saveConfigName = store.activeConfigurationName
-                showSaveAlert = true
-            } label: {
-                Image(systemName: "square.and.arrow.down")
-                    .font(.caption)
+                Button {
+                    saveConfigName = store.activeConfigurationName
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        showSaveField.toggle()
+                    }
+                } label: {
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .help("Save current devices as configuration")
+                .disabled(store.devices.isEmpty)
             }
-            .buttonStyle(.borderless)
-            .help("Save current devices as configuration")
-            .disabled(store.devices.isEmpty)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+
+            if showSaveField {
+                HStack(spacing: 6) {
+                    TextField("Configuration name", text: $saveConfigName)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+                        .onSubmit { commitSaveConfig() }
+
+                    Button("Save") { commitSaveConfig() }
+                        .font(.caption)
+                        .controlSize(.small)
+                        .disabled(saveConfigName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) {
+                            showSaveField = false
+                        }
+                        saveConfigName = ""
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 6)
+            }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+    }
+
+    private func commitSaveConfig() {
+        let name = saveConfigName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        store.saveCurrentAsConfiguration(name: name)
+        store.activeConfigurationName = name
+        saveConfigName = ""
+        withAnimation(.easeInOut(duration: 0.15)) {
+            showSaveField = false
+        }
     }
 
     // MARK: - Configuration List
@@ -191,7 +218,7 @@ struct MockMenuContent: View {
             }
             .padding(.vertical, 4)
         }
-        .frame(maxHeight: .infinity)
+        .frame(maxHeight: 200)
     }
 
     private func sectionHeader(_ title: String) -> some View {
@@ -343,10 +370,12 @@ struct DeviceRow: View {
             Button {
                 EditorWindowController.shared.openEditor(for: device.id, store: store)
             } label: {
-                Image(systemName: "pencil.circle")
-                    .font(.body)
+                Label("Edit", systemImage: "pencil")
+                    .font(.caption)
+                    .labelStyle(.iconOnly)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
             .help("Edit device")
 
             Toggle("", isOn: $device.isEnabled)

@@ -9,8 +9,18 @@ struct MockApp: App {
         MenuBarExtra {
             MockMenuContent(store: store, server: server)
                 .frame(width: 360, height: 520)
+                .onAppear {
+                    if MockServer.wasRunning && server.status == .stopped {
+                        server.start()
+                    }
+                }
         } label: {
-            Label("ImpossiBLE Mock", systemImage: "antenna.radiowaves.left.and.right")
+            Image(nsImage: FontAwesome.brandImage(
+                FontAwesome.bluetoothB,
+                size: 16,
+                active: server.trafficActive
+            ))
+            .accessibilityLabel("ImpossiBLE Mock")
         }
         .menuBarExtraStyle(.window)
     }

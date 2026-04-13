@@ -13,6 +13,7 @@ final class MockServer: ObservableObject {
 
     @Published var status: Status = .stopped
     @Published var lastActivity: String = ""
+    @Published var trafficActive: Bool = false
 
     private let ioQueue = DispatchQueue(label: "impossible.mock.io")
 
@@ -31,7 +32,14 @@ final class MockServer: ObservableObject {
 
     weak var store: MockStore?
 
+    private static let serverEnabledKey = "ServerEnabled"
+
+    static var wasRunning: Bool {
+        UserDefaults.standard.bool(forKey: serverEnabledKey)
+    }
+
     func start() {
+        UserDefaults.standard.set(true, forKey: Self.serverEnabledKey)
         ioQueue.async { [self] in
             guard serverFd < 0 else { return }
 
@@ -87,6 +95,7 @@ final class MockServer: ObservableObject {
     }
 
     func stop() {
+        UserDefaults.standard.set(false, forKey: Self.serverEnabledKey)
         ioQueue.async { [self] in
             scanTimer?.cancel()
             scanTimer = nil
@@ -619,9 +628,23 @@ final class MockServer: ObservableObject {
         }
     }
 
+    private var pulseWorkItem: DispatchWorkItem?
+
     private func log(_ message: String) {
         DispatchQueue.main.async { [weak self] in
-            self?.lastActivity = message
+            guard let self else { return }
+            self.lastActivity = message
+            self.pulseTraffic()
         }
+    }
+
+    private func pulseTraffic() {
+        pulseWorkItem?.cancel()
+        trafficActive = true
+        let item = DispatchWorkItem { [weak self] in
+            self?.trafficActive = false
+        }
+        pulseWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: item)
     }
 }

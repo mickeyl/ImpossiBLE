@@ -179,7 +179,7 @@ mock-debug: $(MOCK_BIN)
 	@echo "Debug build complete. Run with:"
 	@echo "  $(MOCK_BIN)"
 
-mock-dev: SWIFTFLAGS = -g -Onone -DDEBUG
+mock-dev:
 mock-dev: mock-clean $(MOCK_BIN)
 	@pkill -f "$(MOCK_BIN_NAME).app/Contents/MacOS" 2>/dev/null && sleep 0.5 || true
 	@echo "Starting in foreground… (^C to stop)"
@@ -188,10 +188,8 @@ mock-dev: mock-clean $(MOCK_BIN)
 $(MOCK_BIN): $(MOCK_SRCS) $(MOCK_PLIST) $(MOCK_ENTITLEMENTS)
 	mkdir -p $(MOCK_BUNDLE)/Contents/MacOS
 	cp $(MOCK_PLIST) $(MOCK_BUNDLE)/Contents/Info.plist
-	swiftc $(SWIFTFLAGS_COMMON) $(SWIFTFLAGS) \
-		-target arm64-apple-macosx14.0 \
-		-framework SwiftUI \
-		-o $(MOCK_BIN) $(MOCK_SRCS)
+	cd Sources/MockApp && swift build -c release
+	cp Sources/MockApp/.build/release/ImpossiBLE-Mock $(MOCK_BIN)
 	@if [ -z "$(MOCK_SIGN_IDENTITY)" ]; then \
 		echo "WARNING: No codesigning identity matching '$(MOCK_CODESIGN_MATCH)' found in your keychain."; \
 		echo "Signing the mock app ad hoc. Gatekeeper will reject quarantined or distributed copies."; \
