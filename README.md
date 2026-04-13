@@ -135,7 +135,7 @@ The goal is full CoreBluetooth API coverage in the simulator. Real-device testin
 - [ ] **State restoration parity** (`CBCentralManager` restoration flows).
 - [ ] **Pairing / security flows** (bonding, encryption-required characteristics, and relevant errors).
 - [ ] **Performance + robustness** (larger payloads, stress testing). Auto-reconnect is now implemented.
-- [ ] **Configurable mocking schemes** (scriptable scan/connect/service/characteristic responses and fault injection to enable deterministic tests without real hardware).
+- [x] **Configurable mocking schemes** — the mock menu bar app provides stock and user-defined device configurations with full control over services, characteristics, descriptors, and server availability. Remaining work: scripted fault injection and programmatic test automation.
 
 ## License
 
