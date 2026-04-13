@@ -37,6 +37,18 @@ struct DeviceEditorView: View {
                 Toggle("Connectable", isOn: $device.isConnectable)
             }
 
+            Section("Pairing") {
+                Picker("Mode", selection: $device.pairingMode) {
+                    ForEach(PairingMode.allCases, id: \.self) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                if device.pairingMode == .passkey {
+                    TextField("Passkey (6 digits)", text: $device.passkey)
+                        .font(.system(.body, design: .monospaced))
+                }
+            }
+
             Section("Advertisement") {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Service UUIDs")

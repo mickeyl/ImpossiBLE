@@ -51,6 +51,7 @@ help:
 	@echo "  mock        Build the mock menubar app (release)"
 	@echo "  mock-debug  Build with debug symbols"
 	@echo "  mock-dev    Stop, debug-build, and run in foreground"
+	@echo "  mock-relaunch  Quick debug build and background relaunch"
 	@echo "  mock-run    Install and start the mock app"
 	@echo "  mock-stop   Stop the running mock app"
 	@echo "  mock-assess Verify signing and Gatekeeper assessment"
@@ -184,6 +185,12 @@ mock-dev: mock-clean $(MOCK_BIN)
 	@pkill -f "$(MOCK_BIN_NAME).app/Contents/MacOS" 2>/dev/null && sleep 0.5 || true
 	@echo "Starting in foreground… (^C to stop)"
 	$(MOCK_BIN)
+
+mock-relaunch:
+	@cd Sources/MockApp && swift build 2>&1 | tail -3
+	@pkill -f "ImpossiBLE-Mock" 2>/dev/null && sleep 0.5 || true
+	@Sources/MockApp/.build/debug/ImpossiBLE-Mock &
+	@echo "Mock app relaunched (debug build)"
 
 $(MOCK_BIN): $(MOCK_SRCS) $(MOCK_PLIST) $(MOCK_ENTITLEMENTS)
 	mkdir -p $(MOCK_BUNDLE)/Contents/MacOS

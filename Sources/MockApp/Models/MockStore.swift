@@ -4,7 +4,9 @@ import Combine
 final class MockStore: ObservableObject {
     @Published var devices: [MockDevice] = []
     @Published var configurations: [MockConfiguration] = []
-    @Published var activeConfigurationName: String = ""
+    @Published var activeConfigurationName: String = "" {
+        didSet { UserDefaults.standard.set(activeConfigurationName, forKey: "ActiveConfigurationName") }
+    }
 
     private let devicesURL: URL
     private let configsURL: URL
@@ -17,6 +19,7 @@ final class MockStore: ObservableObject {
         self.configsURL = dir.appendingPathComponent("mock-configurations.json")
         loadConfigurations()
         loadDevices()
+        activeConfigurationName = UserDefaults.standard.string(forKey: "ActiveConfigurationName") ?? ""
     }
 
     // MARK: - Active Devices

@@ -20,6 +20,13 @@ struct CharacteristicEditorView: View {
 
                 propertiesSection
 
+                Picker("Security", selection: $characteristic.securityLevel) {
+                    ForEach(SecurityLevel.allCases, id: \.self) { level in
+                        Text(level.label).tag(level)
+                    }
+                }
+                .font(.caption)
+
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Value (hex)")
                         .font(.caption)
@@ -51,6 +58,11 @@ struct CharacteristicEditorView: View {
                     }
                 }
                 Spacer()
+                if characteristic.securityLevel != .none {
+                    Image(systemName: "lock.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
                 Text(propertiesSummary)
                     .font(.caption2)
                     .foregroundStyle(.secondary)

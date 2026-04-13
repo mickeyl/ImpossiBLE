@@ -6,9 +6,7 @@ import ImpossiBLE
 struct SampleApp: App {
     var body: some Scene {
         WindowGroup {
-            NavigationStack {
-                ScanView()
-            }
+            ScanView()
         }
     }
 }
@@ -152,6 +150,15 @@ extension BLEManager: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         state = central.state
         appendLog("State: \(central.state.name)")
+        if central.state == .poweredOn {
+            startScan()
+        } else {
+            isScanning = false
+            connectedPeripheral = nil
+            services = []
+            discovered.removeAll()
+            peripheralMap.removeAll()
+        }
     }
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
@@ -291,8 +298,10 @@ extension CBManagerState {
 
 struct ScanView: View {
     @StateObject private var ble = BLEManager()
+    @State private var path = NavigationPath()
 
     var body: some View {
+        NavigationStack(path: $path) {
         List {
             Section {
                 HStack {
@@ -392,6 +401,12 @@ struct ScanView: View {
                 }
                 .disabled(ble.log.isEmpty)
             }
+        }
+        .onChange(of: ble.state) { newState in
+            if newState != .poweredOn {
+                path = NavigationPath()
+            }
+        }
         }
     }
 }

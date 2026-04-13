@@ -347,6 +347,20 @@ static NSError *cbs_error_from_message(NSString *errStr) {
     return [NSError errorWithDomain:@"ImpossiBLE" code:1 userInfo:@{NSLocalizedDescriptionKey: errStr}];
 }
 
+static NSError *cbs_error_from_msg(NSDictionary *msg) {
+    NSString *domain = msg[@"errorDomain"];
+    NSNumber *code = msg[@"errorCode"];
+    NSString *errStr = msg[@"error"];
+    if ([domain isKindOfClass:[NSString class]] && [code isKindOfClass:[NSNumber class]]) {
+        NSMutableDictionary *info = [NSMutableDictionary dictionary];
+        if ([errStr isKindOfClass:[NSString class]] && errStr.length > 0) {
+            info[NSLocalizedDescriptionKey] = errStr;
+        }
+        return [NSError errorWithDomain:domain code:code.integerValue userInfo:info];
+    }
+    return cbs_error_from_message(errStr);
+}
+
 #pragma mark - L2CAP Helpers
 
 static void cbs_l2cap_close(NSString *chanId) {
@@ -1191,7 +1205,6 @@ static void cbs_handle_message(NSDictionary *msg) {
         NSString *uuidStr = msg[@"id"];
         NSString *chId = msg[@"characteristicId"];
         NSString *valueB64 = msg[@"value"];
-        NSString *errStr = msg[@"error"];
         if (![uuidStr isKindOfClass:[NSString class]] || ![chId isKindOfClass:[NSString class]]) {
             return;
         }
@@ -1205,7 +1218,7 @@ static void cbs_handle_message(NSDictionary *msg) {
         if ([valueB64 isKindOfClass:[NSString class]] && valueB64.length > 0) {
             decodedValue = [[NSData alloc] initWithBase64EncodedString:valueB64 options:0];
         }
-        NSError *err = cbs_error_from_message(errStr);
+        NSError *err = cbs_error_from_msg(msg);
         id<CBPeripheralDelegate> delegate = peripheral.delegate;
         if (!delegate || ![delegate respondsToSelector:@selector(peripheral:didUpdateValueForCharacteristic:error:)]) {
             [chr cbs_setValue:decodedValue];
@@ -1222,7 +1235,6 @@ static void cbs_handle_message(NSDictionary *msg) {
     if ([type isEqualToString:@"didWriteValue"]) {
         NSString *uuidStr = msg[@"id"];
         NSString *chId = msg[@"characteristicId"];
-        NSString *errStr = msg[@"error"];
         if (![uuidStr isKindOfClass:[NSString class]] || ![chId isKindOfClass:[NSString class]]) {
             return;
         }
@@ -1232,7 +1244,7 @@ static void cbs_handle_message(NSDictionary *msg) {
         if (!peripheral || !chr) {
             return;
         }
-        NSError *err = cbs_error_from_message(errStr);
+        NSError *err = cbs_error_from_msg(msg);
         id<CBPeripheralDelegate> delegate = peripheral.delegate;
         if (!delegate || ![delegate respondsToSelector:@selector(peripheral:didWriteValueForCharacteristic:error:)]) {
             return;

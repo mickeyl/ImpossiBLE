@@ -1,5 +1,39 @@
 import Foundation
 
+// MARK: - Security
+
+enum SecurityLevel: Int, Codable, Hashable, CaseIterable {
+    case none = 0
+    case encryptionRequired = 1
+}
+
+extension SecurityLevel {
+    var label: String {
+        switch self {
+            case .none:                "None"
+            case .encryptionRequired:  "Encryption Required"
+        }
+    }
+}
+
+enum PairingMode: Int, Codable, Hashable, CaseIterable {
+    case none = 0
+    case justWorks = 1
+    case passkey = 2
+}
+
+extension PairingMode {
+    var label: String {
+        switch self {
+            case .none:      "None"
+            case .justWorks: "Just Works"
+            case .passkey:   "Passkey"
+        }
+    }
+}
+
+// MARK: - GATT Model
+
 struct MockDescriptor: Identifiable, Codable, Hashable {
     var id = UUID()
     var uuid: String = "2902"
@@ -11,6 +45,7 @@ struct MockCharacteristic: Identifiable, Codable, Hashable {
     var uuid: String = "2A00"
     var properties: UInt = 0x02 // read
     var value: Data?
+    var securityLevel: SecurityLevel = .none
     var descriptors: [MockDescriptor] = []
 }
 
@@ -29,6 +64,8 @@ struct MockDevice: Identifiable, Codable, Hashable {
     var isEnabled: Bool = true
     var advertisedServiceUUIDs: [String] = []
     var manufacturerData: Data?
+    var pairingMode: PairingMode = .none
+    var passkey: String = ""
     var services: [MockService] = []
 }
 
@@ -496,18 +533,19 @@ enum StockConfigurations {
                     ]),
                 ]
             ),
-            // 8 — Custom IoT gateway with proprietary services
+            // 8 — Custom IoT gateway with proprietary services (pairing required)
             MockDevice(
                 name: "SmartHub GW-01",
                 rssi: -35,
                 isConnectable: true,
                 isEnabled: true,
                 advertisedServiceUUIDs: ["0000FFF0-0000-1000-8000-00805F9B34FB"],
+                pairingMode: .justWorks,
                 services: [
                     MockService(uuid: "0000FFF0-0000-1000-8000-00805F9B34FB", isPrimary: true, characteristics: [
                         MockCharacteristic(
                             uuid: "0000FFF1-0000-1000-8000-00805F9B34FB",
-                            properties: 0x12, // read + notify – gateway status
+                            properties: 0x12, // read + notify – gateway status (open)
                             value: Data([0x01, 0x07, 0x00]),
                             descriptors: [
                                 MockDescriptor(uuid: "2902", value: Data([0x00, 0x00])),
@@ -516,16 +554,18 @@ enum StockConfigurations {
                         ),
                         MockCharacteristic(
                             uuid: "0000FFF2-0000-1000-8000-00805F9B34FB",
-                            properties: 0x0A, // read + write – config
+                            properties: 0x0A, // read + write – config (encrypted)
                             value: Data([0x00, 0x3C]),
+                            securityLevel: .encryptionRequired,
                             descriptors: [
                                 MockDescriptor(uuid: "2901", value: "Config".data(using: .utf8)),
                             ]
                         ),
                         MockCharacteristic(
                             uuid: "0000FFF3-0000-1000-8000-00805F9B34FB",
-                            properties: 0x14, // write w/o response + notify – data channel
+                            properties: 0x14, // write w/o response + notify – data channel (encrypted)
                             value: nil,
+                            securityLevel: .encryptionRequired,
                             descriptors: [
                                 MockDescriptor(uuid: "2902", value: Data([0x00, 0x00])),
                                 MockDescriptor(uuid: "2901", value: "Data Channel".data(using: .utf8)),

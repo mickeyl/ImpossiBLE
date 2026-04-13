@@ -14,6 +14,8 @@ final class MockServer: ObservableObject {
     @Published var status: Status = .stopped
     @Published var lastActivity: String = ""
     @Published var trafficActive: Bool = false
+    @Published var connectedDeviceIDs: Set<String> = []
+    @Published var pairedDeviceIDs: Set<String> = []
 
     private let ioQueue = DispatchQueue(label: "impossible.mock.io")
 
@@ -24,6 +26,7 @@ final class MockServer: ObservableObject {
     private var readSource: DispatchSourceRead?
     private var readBuffer = Data()
     private var connectedPeripherals = Set<String>()
+    private var pairedPeripherals = Set<String>()
     private var scanActive = false
     private var scanTimer: DispatchSourceTimer?
     private var writtenCharValues: [String: Data] = [:]
@@ -117,11 +120,13 @@ final class MockServer: ObservableObject {
             unlink(kSocketPath)
 
             connectedPeripherals.removeAll()
+            pairedPeripherals.removeAll()
             writtenCharValues.removeAll()
             writtenDescValues.removeAll()
             notifyingCharacteristics.removeAll()
             readBuffer.removeAll()
 
+            publishDeviceState()
             publishStatus(.stopped)
             log("Stopped")
         }
@@ -140,6 +145,7 @@ final class MockServer: ObservableObject {
         clientFd = fd
         readBuffer.removeAll()
         connectedPeripherals.removeAll()
+        pairedPeripherals.removeAll()
         writtenCharValues.removeAll()
         writtenDescValues.removeAll()
         notifyingCharacteristics.removeAll()
@@ -171,7 +177,9 @@ final class MockServer: ObservableObject {
             scanTimer = nil
             scanActive = false
             connectedPeripherals.removeAll()
+            pairedPeripherals.removeAll()
 
+            publishDeviceState()
             publishStatus(.listening)
             log("Client disconnected")
             return
@@ -323,13 +331,16 @@ final class MockServer: ObservableObject {
             return
         }
         connectedPeripherals.insert(uuidStr)
+        publishDeviceState()
         send(["type": "didConnect", "id": uuidStr])
     }
 
     private func handleCancel(_ msg: [String: Any]) {
         guard let uuidStr = msg["id"] as? String else { return }
         connectedPeripherals.remove(uuidStr)
+        pairedPeripherals.remove(uuidStr)
         notifyingCharacteristics = notifyingCharacteristics.filter { !$0.hasPrefix(uuidStr) }
+        publishDeviceState()
         send([
             "type": "didDisconnect",
             "id": uuidStr,
@@ -343,9 +354,14 @@ final class MockServer: ObservableObject {
 
     private func handleDiscoverServices(_ msg: [String: Any]) {
         guard let uuidStr = msg["id"] as? String else { return }
-        let filterUUIDs = (msg["services"] as? [String])?.map { $0.uppercased() }
+        let rawFilter = msg["services"] as? [String]
+        let filterUUIDs: [String]? = (rawFilter?.isEmpty == false) ? rawFilter!.map { $0.uppercased() } : nil
 
-        guard let device = fetchDevice(uuid: uuidStr) else { return }
+        guard let device = fetchDevice(uuid: uuidStr) else {
+            log("discoverServices: device not found for \(uuidStr)")
+            send(["type": "didDiscoverServices", "id": uuidStr, "services": [] as [[String: Any]], "error": "Device not found"])
+            return
+        }
 
         var servicesPayload: [[String: Any]] = []
         for (idx, svc) in device.services.enumerated() {
@@ -386,7 +402,8 @@ final class MockServer: ObservableObject {
 
     private func handleDiscoverCharacteristics(_ msg: [String: Any]) {
         guard let serviceId = msg["serviceId"] as? String else { return }
-        let filterUUIDs = (msg["characteristics"] as? [String])?.map { $0.uppercased() }
+        let rawFilter = msg["characteristics"] as? [String]
+        let filterUUIDs: [String]? = (rawFilter?.isEmpty == false) ? rawFilter!.map { $0.uppercased() } : nil
 
         let parts = serviceId.split(separator: ":")
         guard parts.count >= 3 else { return }
@@ -466,6 +483,11 @@ final class MockServer: ObservableObject {
         let serviceIdx = Int(parts[2]) ?? 0
         let charIdx = Int(parts[4]) ?? 0
 
+        guard checkSecurity(peripheralUUID: peripheralUUID, serviceIdx: serviceIdx, charIdx: charIdx) else {
+            sendAuthError(type: "didUpdateValue", peripheralUUID: peripheralUUID, idKey: "characteristicId", idValue: charId)
+            return
+        }
+
         let value: Data?
         if let written = writtenCharValues[charId] {
             value = written
@@ -489,8 +511,15 @@ final class MockServer: ObservableObject {
     private func handleWrite(_ msg: [String: Any]) {
         guard let charId = msg["characteristicId"] as? String else { return }
         let parts = charId.split(separator: ":")
-        guard parts.count >= 1 else { return }
+        guard parts.count >= 5 else { return }
         let peripheralUUID = String(parts[0])
+        let serviceIdx = Int(parts[2]) ?? 0
+        let charIdx = Int(parts[4]) ?? 0
+
+        guard checkSecurity(peripheralUUID: peripheralUUID, serviceIdx: serviceIdx, charIdx: charIdx) else {
+            sendAuthError(type: "didWriteValue", peripheralUUID: peripheralUUID, idKey: "characteristicId", idValue: charId)
+            return
+        }
 
         if let b64 = msg["value"] as? String, !b64.isEmpty {
             writtenCharValues[charId] = Data(base64Encoded: b64)
@@ -622,11 +651,57 @@ final class MockServer: ObservableObject {
         ])
     }
 
+    // MARK: - Security
+
+    private func checkSecurity(peripheralUUID: String, serviceIdx: Int, charIdx: Int) -> Bool {
+        guard let device = fetchDevice(uuid: peripheralUUID),
+              serviceIdx < device.services.count,
+              charIdx < device.services[serviceIdx].characteristics.count
+        else { return true }
+
+        let characteristic = device.services[serviceIdx].characteristics[charIdx]
+        guard characteristic.securityLevel == .encryptionRequired else { return true }
+        guard !pairedPeripherals.contains(peripheralUUID) else { return true }
+
+        switch device.pairingMode {
+            case .none:
+                return true
+            case .justWorks:
+                pairedPeripherals.insert(peripheralUUID)
+                publishDeviceState()
+                log("Auto-paired (Just Works): \(device.name)")
+                return true
+            case .passkey:
+                return false
+        }
+    }
+
+    private func sendAuthError(type: String, peripheralUUID: String, idKey: String, idValue: String) {
+        send([
+            "type": type,
+            "id": peripheralUUID,
+            idKey: idValue,
+            "value": "",
+            "error": "Insufficient authentication",
+            "errorDomain": "CBATTErrorDomain",
+            "errorCode": 5,
+        ])
+    }
+
     // MARK: - Utilities
 
     private func publishStatus(_ newStatus: Status) {
         DispatchQueue.main.async { [weak self] in
             self?.status = newStatus
+        }
+    }
+
+    private func publishDeviceState() {
+        let connected = connectedPeripherals
+        let paired = pairedPeripherals
+        DispatchQueue.main.async { [weak self] in
+            self?.connectedDeviceIDs = connected
+            self?.pairedDeviceIDs = paired
         }
     }
 

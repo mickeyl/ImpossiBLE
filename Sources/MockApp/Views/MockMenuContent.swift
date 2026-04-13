@@ -235,15 +235,16 @@ struct MockMenuContent: View {
     }
 
     private func configRow(_ config: MockConfiguration, isStock: Bool) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: isStock ? "star.fill" : "folder.fill")
+        let isActive = config.name == store.activeConfigurationName
+        return HStack(spacing: 8) {
+            Image(systemName: isActive ? "checkmark.circle.fill" : (isStock ? "star.fill" : "folder.fill"))
                 .font(.caption2)
-                .foregroundStyle(isStock ? .orange : .blue)
+                .foregroundStyle(isActive ? .green : (isStock ? .orange : .blue))
                 .frame(width: 14, alignment: .trailing)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(config.name)
-                    .font(.caption)
+                    .font(.caption.weight(isActive ? .semibold : .regular))
                     .lineLimit(1)
                 Text(configSummary(config))
                     .font(.caption2)
@@ -304,7 +305,7 @@ struct MockMenuContent: View {
                     .padding(.vertical, 32)
                 } else {
                     ForEach($store.devices) { $device in
-                        DeviceRow(device: $device, store: store)
+                        DeviceRow(device: $device, store: store, server: server)
                     }
                 }
             }
@@ -345,6 +346,15 @@ struct MockMenuContent: View {
 struct DeviceRow: View {
     @Binding var device: MockDevice
     @ObservedObject var store: MockStore
+    @ObservedObject var server: MockServer
+
+    private var isConnected: Bool {
+        server.connectedDeviceIDs.contains(device.id.uuidString)
+    }
+
+    private var isPaired: Bool {
+        server.pairedDeviceIDs.contains(device.id.uuidString)
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -354,9 +364,21 @@ struct DeviceRow: View {
                 .frame(width: 16, alignment: .trailing)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(device.name)
-                    .font(.subheadline)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(device.name)
+                        .font(.subheadline)
+                        .lineLimit(1)
+                    if isConnected {
+                        Image(systemName: "link")
+                            .font(.caption2)
+                            .foregroundStyle(.green)
+                    }
+                    if isPaired {
+                        Image(systemName: "lock.open.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                }
                 HStack(spacing: 4) {
                     Text(device.services.count == 1 ? "1 service" : "\(device.services.count) services")
                     Text("RSSI \(device.rssi)")
