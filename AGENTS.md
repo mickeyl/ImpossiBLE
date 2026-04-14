@@ -11,6 +11,10 @@
 
 The iOS app does not switch modes directly. It always talks to `/tmp/impossible.sock`; the active macOS provider determines behavior.
 
+The mock menu bar app has a segmented **Off / Mock / Passthrough** picker that controls both providers. Selecting a mode automatically stops the other provider. The menu bar icon reflects the active mode: strikethrough when off, plain Bluetooth when forwarding, dot-badged when mocking.
+
+From the command line:
+
 ```bash
 # Forwarding mode: simulator app -> real Mac Bluetooth
 make mock-stop

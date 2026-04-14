@@ -20,6 +20,7 @@ let package = Package(
                 "Models/MockStore.swift",
                 "Models/MockDevice.swift",
                 "Server/MockServer.swift",
+                "Server/ForwarderController.swift",
                 "Views/DescriptorEditorView.swift",
                 "Views/CharacteristicEditorView.swift",
                 "Views/DeviceEditorView.swift",

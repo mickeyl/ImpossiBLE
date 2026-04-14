@@ -99,9 +99,11 @@ final class MockServer: ObservableObject {
         }
     }
 
-    func stop() {
+    func stop(completion: (() -> Void)? = nil) {
         UserDefaults.standard.set(false, forKey: Self.serverEnabledKey)
         ioQueue.async { [self] in
+            let hadServer = serverFd >= 0
+
             scanTimer?.cancel()
             scanTimer = nil
             scanActive = false
@@ -117,7 +119,9 @@ final class MockServer: ObservableObject {
             acceptSource = nil
             serverFd = -1
 
-            unlink(kSocketPath)
+            if hadServer {
+                unlink(kSocketPath)
+            }
 
             connectedPeripherals.removeAll()
             pairedPeripherals.removeAll()
@@ -129,6 +133,12 @@ final class MockServer: ObservableObject {
             publishDeviceState()
             publishStatus(.stopped)
             log("Stopped")
+
+            if let completion {
+                DispatchQueue.main.async {
+                    completion()
+                }
+            }
         }
     }
 

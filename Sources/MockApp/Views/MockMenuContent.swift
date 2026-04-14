@@ -4,6 +4,7 @@ import AppKit
 struct MockMenuContent: View {
     @ObservedObject var store: MockStore
     @ObservedObject var server: MockServer
+    @ObservedObject var forwarder: ForwarderController
     @State private var showConfigs = false
     @State private var saveConfigName = ""
     @State private var showSaveField = false
@@ -12,20 +13,62 @@ struct MockMenuContent: View {
         VStack(spacing: 0) {
             header
             Divider()
-            configBar
-            Divider()
 
-            if showConfigs {
-                configList
+            if currentMode == .passthrough {
+                passthroughBody
+            } else {
+                configBar
                 Divider()
+
+                if showConfigs {
+                    configList
+                    Divider()
+                }
+                deviceList
             }
-            deviceList
 
             Divider()
             footer
         }
         .onAppear {
             server.store = store
+        }
+    }
+
+    // MARK: - Mode
+
+    private enum Mode: String, CaseIterable {
+        case off = "Off"
+        case mock = "Mock"
+        case passthrough = "Passthrough"
+    }
+
+    private var currentMode: Mode {
+        if server.status != .stopped { return .mock }
+        if forwarder.isRunning { return .passthrough }
+        return .off
+    }
+
+    private var modeBinding: Binding<Mode> {
+        Binding(
+            get: { currentMode },
+            set: { setMode($0) }
+        )
+    }
+
+    private func setMode(_ mode: Mode) {
+        switch mode {
+            case .off:
+                server.stop()
+                forwarder.stop()
+            case .mock:
+                forwarder.stop {
+                    server.start()
+                }
+            case .passthrough:
+                server.stop {
+                    forwarder.start()
+                }
         }
     }
 
@@ -37,56 +80,90 @@ struct MockMenuContent: View {
                 Image(nsImage: FontAwesome.brandImage(FontAwesome.bluetoothB, size: 18))
                     .foregroundStyle(statusColor)
                     .frame(width: 24)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("ImpossiBLE Mock")
-                        .font(.headline)
-                    Text(statusText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text("ImpossiBLE Mock")
+                    .font(.headline)
                 Spacer()
-
-                Button(server.status == .stopped ? "Start" : "Stop") {
-                    server.status == .stopped ? server.start() : server.stop()
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .tint(statusColor)
-                .help(server.status == .stopped ? "Start mock server" : "Stop mock server")
             }
 
-            HStack(spacing: 8) {
-                Label(deviceSummary, systemImage: "antenna.radiowaves.left.and.right.circle")
-                    .controlSize(.small)
-                Spacer()
-                Text("/tmp/impossible.sock")
-                    .font(.caption2.monospaced())
+            Picker("Mode", selection: modeBinding) {
+                ForEach(Mode.allCases, id: \.self) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .disabled(forwarder.isBusy)
+
+            modeStatusDetail
+        }
+        .padding(12)
+        .onAppear {
+            forwarder.refresh()
+        }
+    }
+
+    @ViewBuilder
+    private var modeStatusDetail: some View {
+        switch currentMode {
+            case .off:
+                EmptyView()
+
+            case .mock:
+                VStack(spacing: 4) {
+                    HStack(spacing: 8) {
+                        Label(deviceSummary, systemImage: "antenna.radiowaves.left.and.right.circle")
+                            .controlSize(.small)
+                        Spacer()
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(statusColor)
+                                .frame(width: 6, height: 6)
+                            Text(statusText)
+                        }
+                    }
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
 
-            if !server.lastActivity.isEmpty {
-                HStack {
-                    Image(systemName: "arrow.left.arrow.right")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text(server.lastActivity)
-                        .font(.caption2)
+                    if !server.lastActivity.isEmpty {
+                        HStack {
+                            Image(systemName: "arrow.left.arrow.right")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text(server.lastActivity)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            Spacer()
+                        }
+                    }
+                }
+
+            case .passthrough:
+                HStack(spacing: 6) {
+                    Image(systemName: "dot.radiowaves.left.and.right")
+                        .font(.caption)
+                        .foregroundStyle(forwarderStatusColor)
+                    Text(forwarderStatusText)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer()
                 }
-            }
         }
-        .padding(12)
     }
 
     private var statusColor: Color {
-        switch server.status {
-            case .stopped:         .secondary
-            case .listening:       .blue
-            case .clientConnected: .green
+        switch currentMode {
+            case .off:
+                .secondary
+            case .mock:
+                switch server.status {
+                    case .stopped:         .secondary
+                    case .listening:       .blue
+                    case .clientConnected: .green
+                }
+            case .passthrough:
+                forwarderStatusColor
         }
     }
 
@@ -99,8 +176,30 @@ struct MockMenuContent: View {
     private var statusText: String {
         switch server.status {
             case .stopped:          "Stopped"
-            case .listening:        "Listening on /tmp/impossible.sock"
+            case .listening:        "Listening"
             case .clientConnected:  "Client connected"
+        }
+    }
+
+    private var forwarderStatusColor: Color {
+        switch forwarder.status {
+            case .unknown:          .secondary
+            case .stopped:          .secondary
+            case .running:          .green
+            case .unavailable:      .orange
+        }
+    }
+
+    private var forwarderStatusText: String {
+        switch forwarder.status {
+            case .unknown:
+                "Checking..."
+            case .stopped:
+                "Stopped"
+            case .running(let pids):
+                pids.count == 1 ? "Running (PID \(pids[0]))" : "Running (\(pids.count) processes)"
+            case .unavailable(let message):
+                message
         }
     }
 
@@ -315,17 +414,82 @@ struct MockMenuContent: View {
         .frame(maxHeight: .infinity)
     }
 
+    // MARK: - Passthrough Body
+
+    private var passthroughBody: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            Image(systemName: "dot.radiowaves.left.and.right")
+                .font(.system(size: 36))
+                .foregroundStyle(forwarderStatusColor)
+            Text("Forwarding Real BLE Hardware")
+                .font(.subheadline.weight(.medium))
+            Text(forwarderStatusText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     // MARK: - Footer
+
+    private static let launchAgentPath: String = {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents/com.impossible.ble-mock.plist")
+            .path
+    }()
+
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { FileManager.default.fileExists(atPath: Self.launchAgentPath) },
+            set: { newValue in
+                if newValue {
+                    Self.writeLaunchAgent()
+                } else {
+                    try? FileManager.default.removeItem(atPath: Self.launchAgentPath)
+                }
+            }
+        )
+    }
+
+    private static func writeLaunchAgent() {
+        let bundleURL = Bundle.main.bundleURL
+        let arguments: [String] = if bundleURL.pathExtension == "app" {
+            ["/usr/bin/open", bundleURL.path]
+        } else {
+            [Bundle.main.executableURL?.path ?? ProcessInfo.processInfo.arguments[0]]
+        }
+        let plist: [String: Any] = [
+            "Label": "com.impossible.ble-mock",
+            "ProgramArguments": arguments,
+            "RunAtLoad": true
+        ]
+        let dir = (launchAgentPath as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        if let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0) {
+            FileManager.default.createFile(atPath: launchAgentPath, contents: data)
+        }
+    }
 
     private var footer: some View {
         HStack {
-            Button {
-                store.addDevice()
-            } label: {
-                Label("Add Device", systemImage: "plus")
-                    .font(.caption)
+            if currentMode != .passthrough {
+                Button {
+                    store.addDevice()
+                } label: {
+                    Label("Add Device", systemImage: "plus")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
             }
-            .buttonStyle(.borderless)
+
+            Spacer()
+
+            Toggle("Launch at Startup", isOn: launchAtLoginBinding)
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                .controlSize(.small)
 
             Spacer()
 
