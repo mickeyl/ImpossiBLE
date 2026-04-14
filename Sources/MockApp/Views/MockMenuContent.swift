@@ -76,8 +76,16 @@ struct MockMenuContent: View {
                 Image(nsImage: FontAwesome.brandImage(FontAwesome.bluetoothB, size: 18))
                     .foregroundStyle(statusColor)
                     .frame(width: 24)
-                Text("ImpossiBLE Mock")
-                    .font(.headline)
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Text("ImpossiBLE Mock")
+                        .font(.headline)
+                    if !appVersion.isEmpty {
+                        Text(appVersion)
+                            .font(.caption)
+                            .fontWeight(.regular)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Spacer()
             }
 
@@ -96,6 +104,10 @@ struct MockMenuContent: View {
         .onAppear {
             forwarder.refresh()
         }
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? AppVersion.current
     }
 
     @ViewBuilder

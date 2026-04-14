@@ -17,6 +17,7 @@ let package = Package(
             ],
             sources: [
                 "MockApp.swift",
+                "Models/AppVersion.swift",
                 "Models/MockStore.swift",
                 "Models/MockProviderMode.swift",
                 "Models/MockDevice.swift",
