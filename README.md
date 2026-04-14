@@ -24,6 +24,12 @@ The repo also includes a **mock menu bar app** that listens on the same socket a
 
 Your app code remains unchanged -- `CBCentralManager`, `CBPeripheral`, delegate callbacks, and all other CoreBluetooth types work as expected.
 
+<p align="center">
+  <img src="screenshot-mock.png" alt="Mock mode" width="300">
+  &nbsp;&nbsp;
+  <img src="screenshot-passthrough.png" alt="Passthrough mode" width="300">
+</p>
+
 ### Under the Hood (Technical Details)
 
 - **Method swizzling on the simulator**: the library swizzles `CBCentralManager` init/state/scan/connect APIs and routes them to a local transport.
