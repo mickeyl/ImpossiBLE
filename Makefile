@@ -24,6 +24,7 @@ MOCK_ENTITLEMENTS = Sources/MockApp/Resources/entitlements.plist
 MOCK_BUNDLE = ImpossiBLE-Mock.app
 MOCK_BIN = $(MOCK_BUNDLE)/Contents/MacOS/ImpossiBLE-Mock
 MOCK_BIN_NAME = ImpossiBLE-Mock
+MOCK_FONT_RESOURCE = Sources/MockApp/Resources/fa-brands-400.ttf
 INSTALLED_MOCK_APP = $(INSTALL_DIR)/$(MOCK_BUNDLE)
 MOCK_DIST_ZIP = ImpossiBLE-Mock.zip
 NOTARY_PROFILE ?=
@@ -193,11 +194,13 @@ mock-relaunch:
 	@Sources/MockApp/.build/debug/ImpossiBLE-Mock &
 	@echo "Mock app relaunched (debug build)"
 
-$(MOCK_BIN): $(MOCK_SRCS) $(MOCK_PLIST) $(MOCK_ENTITLEMENTS)
+$(MOCK_BIN): $(MOCK_SRCS) $(MOCK_PLIST) $(MOCK_ENTITLEMENTS) $(MOCK_FONT_RESOURCE)
 	mkdir -p $(MOCK_BUNDLE)/Contents/MacOS
+	mkdir -p $(MOCK_BUNDLE)/Contents/Resources
 	cp $(MOCK_PLIST) $(MOCK_BUNDLE)/Contents/Info.plist
 	cd Sources/MockApp && swift build $(SWIFTPM_FLAGS) -c release
 	cp Sources/MockApp/.build/release/ImpossiBLE-Mock $(MOCK_BIN)
+	cp $(MOCK_FONT_RESOURCE) $(MOCK_BUNDLE)/Contents/Resources/
 	@if [ -z "$(MOCK_SIGN_IDENTITY)" ]; then \
 		echo "WARNING: No codesigning identity matching '$(MOCK_CODESIGN_MATCH)' found in your keychain."; \
 		echo "Signing the mock app ad hoc. Gatekeeper will reject quarantined or distributed copies."; \

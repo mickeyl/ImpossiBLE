@@ -1,6 +1,15 @@
 ImpossiBLE ChangeLog
 ====================
 
+0.8.3 (2026-04-14)
+-------------------
+
+Homebrew mock app launch fix.
+
+* Package the mock app's FontAwesome resource in `Contents/Resources` and
+  prefer app-bundle resource lookup so the Homebrew-installed
+  `ImpossiBLE-Mock.app` can launch outside the original SwiftPM build tree.
+
 0.8.1 (2026-04-14)
 -------------------
 

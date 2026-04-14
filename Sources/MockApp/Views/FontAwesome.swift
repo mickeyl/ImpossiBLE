@@ -17,7 +17,8 @@ enum FontAwesome {
         guard !registered else { return }
         registered = true
 
-        guard let url = Bundle.module.url(forResource: "fa-brands-400", withExtension: "ttf") else { return }
+        guard let url = Bundle.main.url(forResource: "fa-brands-400", withExtension: "ttf")
+            ?? Bundle.module.url(forResource: "fa-brands-400", withExtension: "ttf") else { return }
         CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
     }
 
