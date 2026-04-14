@@ -1,6 +1,15 @@
 ImpossiBLE ChangeLog
 ====================
 
+0.9 (2026-04-14)
+-----------------
+
+Mock app startup mode restore fix.
+
+* Persist the selected Off/Mock/Passthrough provider mode and restore it
+  during app launch so Launch at Startup resumes the last selected mode
+  without waiting for the menu UI to open.
+
 0.8.3 (2026-04-14)
 -------------------
 

@@ -37,26 +37,22 @@ struct MockMenuContent: View {
 
     // MARK: - Mode
 
-    private enum Mode: String, CaseIterable {
-        case off = "Off"
-        case mock = "Mock"
-        case passthrough = "Passthrough"
-    }
-
-    private var currentMode: Mode {
+    private var currentMode: MockProviderMode {
         if server.status != .stopped { return .mock }
         if forwarder.isRunning { return .passthrough }
         return .off
     }
 
-    private var modeBinding: Binding<Mode> {
+    private var modeBinding: Binding<MockProviderMode> {
         Binding(
             get: { currentMode },
             set: { setMode($0) }
         )
     }
 
-    private func setMode(_ mode: Mode) {
+    private func setMode(_ mode: MockProviderMode) {
+        mode.persist()
+
         switch mode {
             case .off:
                 server.stop()
@@ -86,8 +82,8 @@ struct MockMenuContent: View {
             }
 
             Picker("Mode", selection: modeBinding) {
-                ForEach(Mode.allCases, id: \.self) { mode in
-                    Text(mode.rawValue).tag(mode)
+                ForEach(MockProviderMode.allCases, id: \.self) { mode in
+                    Text(mode.title).tag(mode)
                 }
             }
             .pickerStyle(.segmented)

@@ -3,18 +3,45 @@ import AppKit
 
 @main
 struct MockApp: App {
-    @StateObject private var store = MockStore()
-    @StateObject private var server = MockServer()
-    @StateObject private var forwarder = ForwarderController()
+    @StateObject private var store: MockStore
+    @StateObject private var server: MockServer
+    @StateObject private var forwarder: ForwarderController
 
     init() {
+        let store = MockStore()
+        let server = MockServer(autoStart: false)
+        let forwarder = ForwarderController()
+
+        server.store = store
+
+        _store = StateObject(wrappedValue: store)
+        _server = StateObject(wrappedValue: server)
+        _forwarder = StateObject(wrappedValue: forwarder)
+
         NSApplication.shared.setActivationPolicy(.accessory)
+        Self.restorePersistedMode(server: server, forwarder: forwarder)
     }
 
     private var menuBarMode: FontAwesome.MenuBarMode {
         if server.status != .stopped { return .mock }
         if case .running = forwarder.status { return .passthrough }
         return .off
+    }
+
+    private static func restorePersistedMode(server: MockServer, forwarder: ForwarderController) {
+        switch MockProviderMode.persisted {
+            case .off:
+                server.stop()
+                forwarder.stop()
+            case .mock:
+                forwarder.stop {
+                    server.start()
+                }
+            case .passthrough:
+                server.stop {
+                    forwarder.start()
+                }
+        }
     }
 
     var body: some Scene {

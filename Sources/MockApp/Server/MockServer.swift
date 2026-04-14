@@ -37,8 +37,8 @@ final class MockServer: ObservableObject {
 
     private static let serverEnabledKey = "ServerEnabled"
 
-    init() {
-        if UserDefaults.standard.bool(forKey: Self.serverEnabledKey) {
+    init(autoStart: Bool = true) {
+        if autoStart, UserDefaults.standard.bool(forKey: Self.serverEnabledKey) {
             start()
         }
     }
