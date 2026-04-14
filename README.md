@@ -6,23 +6,23 @@
 
 **Use real Bluetooth Low Energy hardware from the iOS Simulator.**
 
-Apple's `CoreBluetooth` framework does not function inside the iOS Simulator -- peripherals cannot be discovered, connections fail silently, and the `CBCentralManager` state never reaches `poweredOn`. ImpossiBLE makes the impossible possible by transparently bridging BLE operations from your simulated app to actual Bluetooth hardware on the host Mac.
+Apple's `CoreBluetooth` framework does not function inside the iOS Simulator — peripherals cannot be discovered, connections fail silently, and the `CBCentralManager` state never reaches `poweredOn`. ImpossiBLE makes the impossible possible by transparently bridging BLE operations from your simulated app to actual Bluetooth hardware on the host Mac.
 
 ## Simulator Reality (and Why This Exists)
 
-Older iOS Simulator builds exposed *some* CoreBluetooth behavior, but it was incomplete and eventually fell out of maintenance. Apple has long recommended that developers test Bluetooth flows on real devices, and that recommendation still stands. ImpossiBLE is not a replacement for on-device testing -- it is a convenience layer so you can iterate faster between device runs.
+Older iOS Simulator builds exposed *some* CoreBluetooth behavior, but it was incomplete and eventually fell out of maintenance. Apple has long recommended that developers test Bluetooth flows on real devices, and that recommendation still stands. ImpossiBLE is not a replacement for on-device testing — it is a convenience layer so you can iterate faster between device runs.
 
 ## How It Works
 
 ImpossiBLE is a two-process architecture:
 
-1. **Library** (linked into your iOS app) -- Uses Objective-C runtime swizzling to intercept all `CBCentralManager` calls at load time. Instead of talking to the (non-functional) simulated Bluetooth stack, it forwards every operation as JSON messages over a Unix domain socket.
+1. **Library** (linked into your iOS app) — Uses Objective-C runtime swizzling to intercept all `CBCentralManager` calls at load time. Instead of talking to the (non-functional) simulated Bluetooth stack, it forwards every operation as JSON messages over a Unix domain socket.
 
-2. **Helper** (runs natively on macOS) -- A lightweight background app that listens on `/tmp/impossible.sock`, translates the JSON messages into real `CoreBluetooth` API calls, and sends results back.
+2. **Helper** (runs natively on macOS) — A lightweight background app that listens on `/tmp/impossible.sock`, translates the JSON messages into real `CoreBluetooth` API calls, and sends results back.
 
-The repo also includes a **mock menu bar app** that listens on the same socket and serves configurable virtual BLE peripherals. A segmented **Off / Mock / Passthrough** control switches between modes -- selecting one automatically stops the other. The menu bar icon reflects the active mode (strikethrough when off, plain when forwarding, dot-badged when mocking) and flashes on socket traffic so you can see activity at a glance. The mock app ships with several stock configurations -- from a single heart rate monitor to a dense 12-device sensor environment -- and lets you save/load your own. A "Launch at Startup" option in the footer installs a LaunchAgent for automatic login startup. Server state is persisted and auto-restored on launch.
+The repo also includes a **mock menu bar app** that listens on the same socket and serves configurable virtual BLE peripherals. A segmented **Off / Mock / Passthrough** control switches between modes — selecting one automatically stops the other. The menu bar icon reflects the active mode (strikethrough when off, plain when forwarding, dot-badged when mocking) and flashes on socket traffic so you can see activity at a glance. The mock app ships with several stock configurations — from a single heart rate monitor to a dense 12-device sensor environment — and lets you save/load your own. A "Launch at Startup" option in the footer installs a LaunchAgent for automatic login startup. Server state is persisted and auto-restored on launch.
 
-Your app code remains unchanged -- `CBCentralManager`, `CBPeripheral`, delegate callbacks, and all other CoreBluetooth types work as expected.
+Your app code remains unchanged — `CBCentralManager`, `CBPeripheral`, delegate callbacks, and all other CoreBluetooth types work as expected.
 
 <p align="center">
   <img src="screenshot-mock.png" alt="Mock mode" width="300">
@@ -33,10 +33,10 @@ Your app code remains unchanged -- `CBCentralManager`, `CBPeripheral`, delegate 
 ### Under the Hood (Technical Details)
 
 - **Method swizzling on the simulator**: the library swizzles `CBCentralManager` init/state/scan/connect APIs and routes them to a local transport.
-- **Multi-central multiplexing**: multiple `CBCentralManager` instances in the same app work independently, each with its own peripheral store, scan filters, and delegate callbacks -- matching real CoreBluetooth behavior where peripherals and their discovered services are shared across managers.
+- **Multi-central multiplexing**: multiple `CBCentralManager` instances in the same app work independently, each with its own peripheral store, scan filters, and delegate callbacks — matching real CoreBluetooth behavior where peripherals and their discovered services are shared across managers.
 - **Proxy CoreBluetooth objects**: it creates shim `CBPeripheral`, `CBService`, `CBCharacteristic`, `CBDescriptor`, and `CBL2CAPChannel` objects so your app sees real types.
 - **Transport**: newline-delimited JSON over a Unix domain socket (`/tmp/impossible.sock`), with auto-reconnect.
-- **Connection-aware state**: `CBCentralManager.state` reflects actual socket connectivity -- `poweredOn` when connected to a provider, `poweredOff` when not. `centralManagerDidUpdateState:` fires automatically on transitions, so your app reacts to the helper/mock starting or stopping just like it would to real Bluetooth state changes.
+- **Connection-aware state**: `CBCentralManager.state` reflects actual socket connectivity — `poweredOn` when connected to a provider, `poweredOff` when not. `centralManagerDidUpdateState:` fires automatically on transitions, so your app reacts to the helper/mock starting or stopping just like it would to real Bluetooth state changes.
 - **Data encoding**: characteristic values and L2CAP payloads are base64-encoded across the wire.
 - **Service filter fidelity**: the helper enforces `discoverServices:` filters to match iOS behavior, even though macOS CoreBluetooth returns all cached services.
 - **Callback fidelity**: delegate callbacks are dispatched back onto the original `CBCentralManager` delegate queue.
@@ -51,7 +51,7 @@ Your app code remains unchanged -- `CBCentralManager`, `CBPeripheral`, delegate 
 - L2CAP channel support (with timeout handling)
 - Connection-aware `CBManagerState` with automatic `centralManagerDidUpdateState:` callbacks
 - Auto-reconnect when the provider starts after the app
-- Automatic `+load` activation -- no setup code required
+- Automatic `+load` activation — no setup code required
 
 ## Requirements
 
@@ -78,7 +78,7 @@ make run
 
 The iOS app always uses the same ImpossiBLE integration and connects to `/tmp/impossible.sock`. Switching modes is done by choosing which macOS app owns that socket.
 
-The mock menu bar app provides a segmented **Off / Mock / Passthrough** picker that handles this automatically -- selecting a mode stops the other provider and starts the chosen one.
+The mock menu bar app provides a segmented **Off / Mock / Passthrough** picker that handles this automatically — selecting a mode stops the other provider and starts the chosen one.
 
 From the command line:
 
@@ -130,9 +130,9 @@ That is all. The library activates automatically via `+load` on simulator builds
 
 ## Limitations
 
-- **Central role only** -- peripheral/broadcaster mode is not supported.
-- **Single simulator app** -- only one simulator app can connect to the helper at a time. A new client connection replaces the existing one; the previous client is dropped and the helper tears down scans, connections, and L2CAP channels. Multiple `CBCentralManager` instances within a single app are fully supported.
-- **Provider must be running** -- the library auto-reconnects every 2 seconds, so you can start the helper or mock app before or after your simulator app. Until connected, `CBCentralManager.state` reports `poweredOff`.
+- **Central role only** — peripheral/broadcaster mode is not supported.
+- **Single simulator app** — only one simulator app can connect to the helper at a time. A new client connection replaces the existing one; the previous client is dropped and the helper tears down scans, connections, and L2CAP channels. Multiple `CBCentralManager` instances within a single app are fully supported.
+- **Provider must be running** — the library auto-reconnects every 2 seconds, so you can start the helper or mock app before or after your simulator app. Until connected, `CBCentralManager.state` reports `poweredOff`.
 
 ## Roadmap to 1.0 (Goal: 100% CoreBluetooth Coverage)
 
@@ -149,4 +149,4 @@ The goal is full CoreBluetooth API coverage in the simulator. Real-device testin
 
 ## License
 
-MIT -- see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE) for details.
