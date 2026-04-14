@@ -172,6 +172,7 @@ watch: install
 
 SWIFTFLAGS ?= -O
 SWIFTFLAGS_COMMON = -swift-version 5
+SWIFTPM_FLAGS ?= --disable-sandbox
 
 mock: $(MOCK_BIN)
 
@@ -187,7 +188,7 @@ mock-dev: mock-clean $(MOCK_BIN)
 	$(MOCK_BIN)
 
 mock-relaunch:
-	@cd Sources/MockApp && swift build 2>&1 | tail -3
+	@cd Sources/MockApp && swift build $(SWIFTPM_FLAGS) 2>&1 | tail -3
 	@pkill -f "ImpossiBLE-Mock" 2>/dev/null && sleep 0.5 || true
 	@Sources/MockApp/.build/debug/ImpossiBLE-Mock &
 	@echo "Mock app relaunched (debug build)"
@@ -195,7 +196,7 @@ mock-relaunch:
 $(MOCK_BIN): $(MOCK_SRCS) $(MOCK_PLIST) $(MOCK_ENTITLEMENTS)
 	mkdir -p $(MOCK_BUNDLE)/Contents/MacOS
 	cp $(MOCK_PLIST) $(MOCK_BUNDLE)/Contents/Info.plist
-	cd Sources/MockApp && swift build -c release
+	cd Sources/MockApp && swift build $(SWIFTPM_FLAGS) -c release
 	cp Sources/MockApp/.build/release/ImpossiBLE-Mock $(MOCK_BIN)
 	@if [ -z "$(MOCK_SIGN_IDENTITY)" ]; then \
 		echo "WARNING: No codesigning identity matching '$(MOCK_CODESIGN_MATCH)' found in your keychain."; \

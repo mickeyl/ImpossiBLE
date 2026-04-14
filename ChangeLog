@@ -1,6 +1,14 @@
 ImpossiBLE ChangeLog
 ====================
 
+0.8.1 (2026-04-14)
+-------------------
+
+Homebrew build fix.
+
+* Disable SwiftPM subprocess sandboxing for the mock app build to avoid
+  `sandbox-exec` failures inside the Homebrew build sandbox.
+
 0.8 (2026-04-13)
 -----------------
 
