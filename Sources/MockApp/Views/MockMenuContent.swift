@@ -5,6 +5,8 @@ struct MockMenuContent: View {
     @ObservedObject var store: MockStore
     @ObservedObject var server: MockServer
     @ObservedObject var forwarder: ForwarderController
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
     @State private var showConfigs = false
     @State private var saveConfigName = ""
     @State private var showSaveField = false
@@ -224,22 +226,35 @@ struct MockMenuContent: View {
                     HStack(spacing: 4) {
                         Image(systemName: showConfigs ? "chevron.down" : "chevron.right")
                             .font(.caption2)
+                            .symbolRenderingMode(.monochrome)
                         Image(systemName: "folder")
                             .font(.caption)
+                            .symbolRenderingMode(.monochrome)
                         if !store.activeConfigurationName.isEmpty {
                             Text(store.activeConfigurationName)
-                                .font(.caption)
+                                .font(.subheadline)
                                 .lineLimit(1)
                         } else {
                             Text("Configurations")
-                                .font(.caption)
+                                .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
                 Spacer()
+
+                Button {
+                    openCaptureWindow()
+                } label: {
+                    Text("Capture")
+                }
+                .font(.caption)
+                .buttonStyle(.borderless)
+                .help("Capture nearby BLE devices")
+                .disabled(forwarder.isBusy || (!forwarder.canStart && !forwarder.isRunning))
 
                 Button {
                     saveConfigName = store.activeConfigurationName
@@ -247,15 +262,14 @@ struct MockMenuContent: View {
                         showSaveField.toggle()
                     }
                 } label: {
-                    Image(systemName: "square.and.arrow.down")
-                        .font(.caption)
+                    Text("Save")
                 }
+                .font(.caption)
                 .buttonStyle(.borderless)
                 .help("Save current devices as configuration")
                 .disabled(store.devices.isEmpty)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(12)
 
             if showSaveField {
                 HStack(spacing: 6) {
@@ -294,6 +308,15 @@ struct MockMenuContent: View {
         saveConfigName = ""
         withAnimation(.easeInOut(duration: 0.15)) {
             showSaveField = false
+        }
+    }
+
+    private func openCaptureWindow() {
+        dismiss()
+        DispatchQueue.main.async {
+            openWindow(id: "capture")
+            NSRunningApplication.current.activate(options: [.activateAllWindows])
+            NSApplication.shared.activate()
         }
     }
 

@@ -13,6 +13,10 @@ The iOS app does not switch modes directly. It always talks to `/tmp/impossible.
 
 The mock menu bar app has a segmented **Off / Mock / Passthrough** picker that controls both providers. Selecting a mode automatically stops the other provider. The menu bar icon reflects the active mode: strikethrough when off, plain Bluetooth when forwarding, dot-badged when mocking.
 
+Mock capture is a menu bar app workflow that temporarily uses the real forwarding helper. Opening **Capture** stops the mock server if needed, starts `impossible-helper.app`, connects to `/tmp/impossible.sock` as a helper client, scans live advertisements, and shows filtered capture results. Saving a capture runs a deep inspection pass for selected connectable devices: connect, discover services, discover characteristics, discover descriptors, read readable characteristic values, and read descriptor values. Non-connectable devices or devices that fail inspection are saved advertisement-only. After save, the app stops the helper, restarts Mock mode, and loads the captured configuration for tuning.
+
+Capture rows hide unnamed devices by default, sort more "interesting" advertisements first (more advertised services, named, connectable, manufacturer data, RSSI), and use a factory icon to indicate manufacturer-specific advertisement data.
+
 From the command line:
 
 ```bash

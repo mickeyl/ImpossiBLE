@@ -119,6 +119,22 @@ final class MockStore: ObservableObject {
         saveConfigurations()
     }
 
+    func saveConfiguration(name: String, devices newDevices: [MockDevice], loadImmediately: Bool) {
+        let config = MockConfiguration(name: name, devices: newDevices)
+        if let idx = configurations.firstIndex(where: { $0.name == name }) {
+            configurations[idx] = config
+        } else {
+            configurations.append(config)
+        }
+        saveConfigurations()
+
+        if loadImmediately {
+            loadConfiguration(config)
+        } else {
+            activeConfigurationName = name
+        }
+    }
+
     func loadConfiguration(_ config: MockConfiguration) {
         // Deep copy with fresh IDs so multiple loads don't share identifiers
         devices = config.devices.map { device in

@@ -67,5 +67,12 @@ struct MockApp: App {
             .frame(minWidth: 720, minHeight: 760)
         }
         .defaultSize(width: 760, height: 820)
+
+        Window("Capture Nearby Devices", id: "capture") {
+            CaptureSheet(store: store, server: server, forwarder: forwarder)
+                .background(DeviceEditorWindowActivator())
+                .frame(minWidth: 640, minHeight: 560)
+        }
+        .defaultSize(width: 640, height: 560)
     }
 }

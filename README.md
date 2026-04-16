@@ -20,7 +20,7 @@ ImpossiBLE is a two-process architecture:
 
 2. **Helper** (runs natively on macOS) — A lightweight background app that listens on `/tmp/impossible.sock`, translates the JSON messages into real `CoreBluetooth` API calls, and sends results back.
 
-The repo also includes a **mock menu bar app** that listens on the same socket and serves configurable virtual BLE peripherals. A segmented **Off / Mock / Passthrough** control switches between modes — selecting one automatically stops the other. The menu bar icon reflects the active mode (strikethrough when off, plain when forwarding, dot-badged when mocking) and flashes on socket traffic so you can see activity at a glance. The mock app ships with several stock configurations — from a single heart rate monitor to a dense 12-device sensor environment — and lets you save/load your own. A "Launch at Startup" option in the footer installs a LaunchAgent for automatic login startup. Server state is persisted and auto-restored on launch.
+The repo also includes a **mock menu bar app** that listens on the same socket and serves configurable virtual BLE peripherals. A segmented **Off / Mock / Passthrough** control switches between modes — selecting one automatically stops the other. The menu bar icon reflects the active mode (strikethrough when off, plain when forwarding, dot-badged when mocking) and flashes on socket traffic so you can see activity at a glance. The mock app ships with several stock configurations — from a single heart rate monitor to a dense 12-device sensor environment — and lets you save/load your own. It can also capture nearby BLE advertisements into a new mock configuration; the factory icon in capture results means that advertisement includes manufacturer-specific data. A "Launch at Startup" option in the footer installs a LaunchAgent for automatic login startup. Server state is persisted and auto-restored on launch.
 
 Your app code remains unchanged — `CBCentralManager`, `CBPeripheral`, delegate callbacks, and all other CoreBluetooth types work as expected.
 
@@ -96,6 +96,14 @@ make mock-run
 
 Run only one provider at a time. The background helper and the mock menu bar app are mutually exclusive because both listen on `/tmp/impossible.sock`.
 
+### Capturing Mock Configurations
+
+The mock menu bar app can capture nearby BLE devices into a new editable configuration. Click **Capture**, start scanning, choose the devices to include, then save the configuration.
+
+Capture results hide unnamed devices by default and sort likely useful devices first: advertisements with more service UUIDs, named devices, connectable devices, manufacturer-specific data, then stronger RSSI. Enable **Show Unnamed** when you need to inspect the full noisy environment. The factory icon means the advertisement includes manufacturer-specific data.
+
+When you save a capture, ImpossiBLE performs a deeper inspection for selected connectable devices before writing the configuration. It connects to each device, discovers services, characteristics, and descriptors, and reads values where CoreBluetooth allows reads. Devices that are not connectable, fail to connect, or time out are still saved from their advertisement data. Secured characteristics may fail or trigger normal pairing/security behavior from macOS.
+
 ## Makefile Targets
 
 | Target    | Description                                        |
@@ -134,9 +142,9 @@ That is all. The library activates automatically via `+load` on simulator builds
 - **Single simulator app** — only one simulator app can connect to the helper at a time. A new client connection replaces the existing one; the previous client is dropped and the helper tears down scans, connections, and L2CAP channels. Multiple `CBCentralManager` instances within a single app are fully supported.
 - **Provider must be running** — the library auto-reconnects every 2 seconds, so you can start the helper or mock app before or after your simulator app. Until connected, `CBCentralManager.state` reports `poweredOff`.
 
-## Roadmap to 1.0 (Goal: 100% CoreBluetooth Coverage)
+## Roadmap Beyond 1.0
 
-The goal is full CoreBluetooth API coverage in the simulator. Real-device testing is still required, but this tracks what remains before a 1.0 release:
+The goal remains full CoreBluetooth API coverage in the simulator. Real-device testing is still required, but this tracks what remains after the 1.0 release:
 
 - [ ] **Peripheral role support** (advertising, GATT server, write/notify from the peripheral side).
 - [ ] **Multiple simulator clients** (concurrent apps connecting to the helper).

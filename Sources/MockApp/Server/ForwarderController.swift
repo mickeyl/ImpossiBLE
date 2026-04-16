@@ -47,8 +47,8 @@ final class ForwarderController: ObservableObject {
         }
     }
 
-    func start() {
-        perform {
+    func start(completion: (() -> Void)? = nil) {
+        perform(completion: completion) {
             if self.currentPIDs().isEmpty {
                 if let wrapper = self.locateWrapper() {
                     let result = self.run(wrapper.path, ["start"])
