@@ -98,6 +98,10 @@ Run only one provider at a time. The background helper and the mock menu bar app
 
 ### Capturing Mock Configurations
 
+<p align="center">
+  <img src="screenshot-capture.png" alt="Capture mode" width="300">
+</p>
+
 The mock menu bar app can capture nearby BLE devices into a new editable configuration. Click **Capture**, start scanning, choose the devices to include, then save the configuration.
 
 Capture results hide unnamed devices by default and sort likely useful devices first: advertisements with more service UUIDs, named devices, connectable devices, manufacturer-specific data, then stronger RSSI. Enable **Show Unnamed** when you need to inspect the full noisy environment. The factory icon means the advertisement includes manufacturer-specific data.
