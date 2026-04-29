@@ -7,9 +7,13 @@ struct MockMenuContent: View {
     @ObservedObject var forwarder: ForwarderController
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
+    var onDismiss: (() -> Void)?
+    var onOpenCapture: (() -> Void)?
+    var onOpenDevice: ((UUID) -> Void)?
     @State private var showConfigs = false
     @State private var saveConfigName = ""
     @State private var showSaveField = false
+    @AppStorage(AppPreferences.dismissControlWindowOnDeactivateKey) private var dismissOnDeactivate = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -150,10 +154,10 @@ struct MockMenuContent: View {
 
             case .passthrough:
                 HStack(spacing: 6) {
-                    Image(systemName: "dot.radiowaves.left.and.right")
+                    Image(systemName: forwarder.trafficActive ? "bolt.horizontal.circle.fill" : "dot.radiowaves.left.and.right")
                         .font(.caption)
-                        .foregroundStyle(forwarderStatusColor)
-                    Text(forwarderStatusText)
+                        .foregroundStyle(forwarder.trafficActive ? .green : forwarderStatusColor)
+                    Text(passthroughSummaryText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -211,6 +215,21 @@ struct MockMenuContent: View {
             case .unavailable(let message):
                 message
         }
+    }
+
+    private var passthroughSummaryText: String {
+        guard forwarder.isRunning else { return forwarderStatusText }
+        let devices = forwarder.passthroughDevices
+        let activeCount = devices.filter(\.isActive).count
+        if activeCount > 0 {
+            let deviceWord = activeCount == 1 ? "device" : "devices"
+            return "\(activeCount) active \(deviceWord)"
+        }
+        if !devices.isEmpty {
+            let deviceWord = devices.count == 1 ? "device" : "devices"
+            return "\(devices.count) communicating \(deviceWord)"
+        }
+        return forwarderStatusText
     }
 
     // MARK: - Configuration Bar
@@ -312,11 +331,36 @@ struct MockMenuContent: View {
     }
 
     private func openCaptureWindow() {
-        dismiss()
-        DispatchQueue.main.async {
-            openWindow(id: "capture")
-            NSRunningApplication.current.activate(options: [.activateAllWindows])
-            NSApplication.shared.activate()
+        closeMenuWindow()
+        if let onOpenCapture {
+            onOpenCapture()
+        } else {
+            DispatchQueue.main.async {
+                openWindow(id: "capture")
+                NSRunningApplication.current.activate(options: [.activateAllWindows])
+                NSApplication.shared.activate()
+            }
+        }
+    }
+
+    private func closeMenuWindow() {
+        if let onDismiss {
+            onDismiss()
+        } else {
+            dismiss()
+        }
+    }
+
+    private func openDeviceEditor(_ deviceId: UUID) {
+        closeMenuWindow()
+        if let onOpenDevice {
+            onOpenDevice(deviceId)
+        } else {
+            DispatchQueue.main.async {
+                openWindow(value: deviceId)
+                NSRunningApplication.current.activate(options: [.activateAllWindows])
+                NSApplication.shared.activate()
+            }
         }
     }
 
@@ -436,7 +480,13 @@ struct MockMenuContent: View {
                     .padding(.vertical, 32)
                 } else {
                     ForEach($store.devices) { $device in
-                        DeviceRow(device: $device, store: store, server: server)
+                        DeviceRow(
+                            device: $device,
+                            store: store,
+                            server: server,
+                            onDismiss: onDismiss,
+                            onOpenDevice: openDeviceEditor
+                        )
                     }
                 }
             }
@@ -448,17 +498,61 @@ struct MockMenuContent: View {
     // MARK: - Passthrough Body
 
     private var passthroughBody: some View {
-        VStack(spacing: 12) {
-            Spacer()
-            Image(systemName: "dot.radiowaves.left.and.right")
-                .font(.system(size: 36))
-                .foregroundStyle(forwarderStatusColor)
-            Text("Forwarding Real BLE Hardware")
-                .font(.subheadline.weight(.medium))
-            Text(forwarderStatusText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: forwarder.trafficActive ? "bolt.horizontal.circle.fill" : "dot.radiowaves.left.and.right")
+                    .font(.title3)
+                    .foregroundStyle(forwarder.trafficActive ? .green : forwarderStatusColor)
+                    .frame(width: 24)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Passthrough")
+                        .font(.subheadline.weight(.semibold))
+                    Text(forwarder.lastActivity.isEmpty ? forwarderStatusText : forwarder.lastActivity)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+            }
+            .padding(12)
+
+            Divider()
+
+            if let message = forwarder.activityUnavailableMessage {
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.orange.opacity(0.75))
+                    Text(message)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if forwarder.passthroughDevices.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "antenna.radiowaves.left.and.right.slash")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary.opacity(0.35))
+                    Text("No device traffic yet")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 1) {
+                        ForEach(forwarder.passthroughDevices) { activity in
+                            PassthroughActivityRow(activity: activity)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .frame(maxHeight: .infinity)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -522,6 +616,14 @@ struct MockMenuContent: View {
                 .font(.caption)
                 .controlSize(.small)
 
+            Toggle("Dismiss on Switch", isOn: $dismissOnDeactivate)
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                .controlSize(.small)
+                .onChange(of: dismissOnDeactivate) { _, _ in
+                    NotificationCenter.default.post(name: AppPreferences.controlWindowBehaviorDidChange, object: nil)
+                }
+
             Spacer()
 
             Button("Quit") {
@@ -536,6 +638,73 @@ struct MockMenuContent: View {
     }
 }
 
+// MARK: - Passthrough Activity Row
+
+struct PassthroughActivityRow: View {
+    let activity: PassthroughDeviceActivity
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(activity.isActive ? Color.green : Color.secondary.opacity(0.3))
+                .frame(width: 8, height: 8)
+
+            Image(systemName: "wave.3.right")
+                .font(.caption)
+                .foregroundStyle(activity.isActive ? .green : .blue)
+                .frame(width: 16, alignment: .trailing)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(activity.displayName)
+                    .font(.subheadline)
+                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(activity.lastOperation)
+                    if !activity.lastDetail.isEmpty {
+                        Text(activity.lastDetail)
+                    }
+                    Text("·")
+                    Text(ageText)
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+
+            Spacer()
+
+            if activity.isActive {
+                Text("Now")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.green)
+            } else if activity.count > 1 {
+                Text("\(activity.count)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(activity.isActive ? Color.green.opacity(0.08) : Color.clear)
+        .contentShape(Rectangle())
+        .help(activity.id)
+    }
+
+    private var ageText: String {
+        let age = max(0, Date().timeIntervalSince(activity.lastAt))
+        if age < 2 {
+            return "now"
+        }
+        if age < 60 {
+            return "\(Int(age))s ago"
+        }
+        if age < 3600 {
+            return "\(Int(age / 60))m ago"
+        }
+        return "\(Int(age / 3600))h ago"
+    }
+}
+
 // MARK: - Device Row
 
 struct DeviceRow: View {
@@ -544,6 +713,8 @@ struct DeviceRow: View {
     @ObservedObject var server: MockServer
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
+    var onDismiss: (() -> Void)?
+    var onOpenDevice: ((UUID) -> Void)?
 
     private var isConnected: Bool {
         server.connectedDeviceIDs.contains(device.id.uuidString)
@@ -624,10 +795,18 @@ struct DeviceRow: View {
 
     private func openEditor() {
         let deviceId = device.id
-        dismiss()
-        DispatchQueue.main.async {
-            openWindow(value: deviceId)
-            NSRunningApplication.current.activate(options: [.activateAllWindows])
+        if let onDismiss {
+            onDismiss()
+        } else {
+            dismiss()
+        }
+        if let onOpenDevice {
+            onOpenDevice(deviceId)
+        } else {
+            DispatchQueue.main.async {
+                openWindow(value: deviceId)
+                NSRunningApplication.current.activate(options: [.activateAllWindows])
+            }
         }
     }
 }

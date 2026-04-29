@@ -17,10 +17,12 @@ let package = Package(
             ],
             sources: [
                 "MockApp.swift",
+                "Models/AppPreferences.swift",
                 "Models/AppVersion.swift",
                 "Models/MockStore.swift",
                 "Models/MockProviderMode.swift",
                 "Models/MockDevice.swift",
+                "StatusBarController.swift",
                 "Server/MockServer.swift",
                 "Server/CaptureSession.swift",
                 "Server/ForwarderController.swift",

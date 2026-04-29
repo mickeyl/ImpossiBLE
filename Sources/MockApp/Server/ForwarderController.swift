@@ -1,5 +1,39 @@
 import Foundation
 
+private let passthroughActivityPath = "/tmp/impossible-passthrough-activity.json"
+
+struct PassthroughDeviceActivity: Identifiable, Equatable {
+    let id: String
+    let name: String
+    let lastOperation: String
+    let lastDetail: String
+    let lastAt: Date
+    let count: Int
+    let isActive: Bool
+
+    var displayName: String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+        return id.count > 8 ? String(id.prefix(8)) : id
+    }
+}
+
+private struct PassthroughActivitySnapshot: Decodable {
+    struct Device: Decodable {
+        let id: String
+        let name: String?
+        let lastOperation: String
+        let lastDetail: String?
+        let lastAt: TimeInterval
+        let activeUntil: TimeInterval
+        let count: Int?
+    }
+
+    let devices: [Device]
+}
+
 final class ForwarderController: ObservableObject {
     enum Status: Equatable {
         case unknown
@@ -10,9 +44,14 @@ final class ForwarderController: ObservableObject {
 
     @Published private(set) var status: Status = .unknown
     @Published private(set) var isBusy = false
+    @Published private(set) var passthroughDevices: [PassthroughDeviceActivity] = []
+    @Published private(set) var trafficActive = false
+    @Published private(set) var lastActivity = ""
+    @Published private(set) var activityUnavailableMessage: String?
 
     private let queue = DispatchQueue(label: "impossible.forwarder.control")
     private var pollTimer: Timer?
+    private var activityPollTimer: Timer?
 
     var isRunning: Bool {
         if case .running = status {
@@ -35,10 +74,14 @@ final class ForwarderController: ObservableObject {
         pollTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             self?.refresh()
         }
+        activityPollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.refreshPassthroughActivity()
+        }
     }
 
     deinit {
         pollTimer?.invalidate()
+        activityPollTimer?.invalidate()
     }
 
     func refresh() {
@@ -50,18 +93,16 @@ final class ForwarderController: ObservableObject {
     func start(completion: (() -> Void)? = nil) {
         perform(completion: completion) {
             if self.currentPIDs().isEmpty {
-                if let wrapper = self.locateWrapper() {
+                if let app = self.locateApp() {
+                    _ = self.run("/usr/bin/open", [app.path])
+                } else if let wrapper = self.locateWrapper() {
                     let result = self.run(wrapper.path, ["start"])
-                    if result.exitCode != 0, let app = self.locateApp() {
-                        _ = self.run("/usr/bin/open", [app.path])
-                    } else if result.exitCode != 0 {
+                    if result.exitCode != 0 {
                         self.publish(
                             status: .unavailable(result.output.isEmpty ? "Cannot start impossible-helper" : result.output)
                         )
                         return
                     }
-                } else if let app = self.locateApp() {
-                    _ = self.run("/usr/bin/open", [app.path])
                 } else {
                     self.publish(status: .unavailable("Install impossible-helper first"))
                     return
@@ -88,6 +129,9 @@ final class ForwarderController: ObservableObject {
             }
 
             self.refreshSync()
+            DispatchQueue.main.async {
+                self.clearPassthroughActivity()
+            }
         }
     }
 
@@ -114,6 +158,57 @@ final class ForwarderController: ObservableObject {
         } else {
             publish(status: .unavailable("Install impossible-helper first"))
         }
+    }
+
+    private func refreshPassthroughActivity() {
+        guard isRunning else {
+            clearPassthroughActivity()
+            return
+        }
+
+        let url = URL(fileURLWithPath: passthroughActivityPath)
+        guard let data = try? Data(contentsOf: url),
+              let snapshot = try? JSONDecoder().decode(PassthroughActivitySnapshot.self, from: data)
+        else {
+            clearPassthroughActivity(
+                unavailableMessage: "Restart impossible-helper to enable activity tracking"
+            )
+            return
+        }
+
+        let now = Date().timeIntervalSinceReferenceDate
+        let devices = snapshot.devices
+            .map { device in
+                PassthroughDeviceActivity(
+                    id: device.id,
+                    name: device.name ?? "",
+                    lastOperation: device.lastOperation,
+                    lastDetail: device.lastDetail ?? "",
+                    lastAt: Date(timeIntervalSinceReferenceDate: device.lastAt),
+                    count: device.count ?? 1,
+                    isActive: device.activeUntil >= now
+                )
+            }
+            .sorted { $0.lastAt > $1.lastAt }
+
+        passthroughDevices = devices
+        trafficActive = devices.contains { $0.isActive }
+        activityUnavailableMessage = nil
+        if let latest = devices.first {
+            let detail = latest.lastDetail.isEmpty ? "" : " \(latest.lastDetail)"
+            lastActivity = "\(latest.displayName): \(latest.lastOperation)\(detail)"
+        } else {
+            lastActivity = ""
+        }
+    }
+
+    private func clearPassthroughActivity(unavailableMessage: String? = nil) {
+        if !passthroughDevices.isEmpty {
+            passthroughDevices = []
+        }
+        trafficActive = false
+        lastActivity = ""
+        activityUnavailableMessage = unavailableMessage
     }
 
     private func currentPIDs() -> [String] {
@@ -159,15 +254,18 @@ final class ForwarderController: ObservableObject {
 
     private func appCandidates() -> [URL] {
         var candidates = [
-            appContainerDirectory().appendingPathComponent("impossible-helper.app"),
-            homeDirectory().appendingPathComponent(".local/bin/impossible-helper.app"),
-            URL(fileURLWithPath: "/opt/homebrew/opt/impossible/libexec/impossible-helper.app"),
-            URL(fileURLWithPath: "/usr/local/opt/impossible/libexec/impossible-helper.app")
+            appContainerDirectory().appendingPathComponent("impossible-helper.app")
         ]
 
         candidates.append(contentsOf: ancestorDirectories().map {
             $0.appendingPathComponent("impossible-helper.app")
         })
+
+        candidates.append(contentsOf: [
+            homeDirectory().appendingPathComponent(".local/bin/impossible-helper.app"),
+            URL(fileURLWithPath: "/opt/homebrew/opt/impossible/libexec/impossible-helper.app"),
+            URL(fileURLWithPath: "/usr/local/opt/impossible/libexec/impossible-helper.app")
+        ])
 
         return unique(candidates)
     }

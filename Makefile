@@ -32,7 +32,7 @@ NOTARY_PROFILE ?=
 .DEFAULT_GOAL := help
 
 .PHONY: help helper debug dev install uninstall clean run stop restart status log watch \
-        mock mock-debug mock-dev mock-install mock-run mock-stop mock-assess mock-notarize mock-clean
+        mock mock-debug mock-dev mock-relaunch mock-install mock-run mock-stop mock-assess mock-notarize mock-clean
 
 help:
 	@echo "Usage: make <target>"
@@ -52,7 +52,7 @@ help:
 	@echo "  mock        Build the mock menubar app (release)"
 	@echo "  mock-debug  Build with debug symbols"
 	@echo "  mock-dev    Stop, debug-build, and run in foreground"
-	@echo "  mock-relaunch  Quick debug build and background relaunch"
+	@echo "  mock-relaunch  Quick helper/mock debug rebuild and background relaunch"
 	@echo "  mock-run    Install and start the mock app"
 	@echo "  mock-stop   Stop the running mock app"
 	@echo "  mock-assess Verify signing and Gatekeeper assessment"
@@ -188,10 +188,18 @@ mock-dev: mock-clean $(MOCK_BIN)
 	@echo "Starting in foreground… (^C to stop)"
 	$(MOCK_BIN)
 
-mock-relaunch:
+mock-relaunch: helper
+	@mkdir -p $(MOCK_BUNDLE)/Contents/MacOS
+	@mkdir -p $(MOCK_BUNDLE)/Contents/Resources
+	@cp $(MOCK_PLIST) $(MOCK_BUNDLE)/Contents/Info.plist
 	@cd Sources/MockApp && swift build $(SWIFTPM_FLAGS) 2>&1 | tail -3
+	@cp Sources/MockApp/.build/debug/$(MOCK_BIN_NAME) $(MOCK_BIN)
+	@cp $(MOCK_FONT_RESOURCE) $(MOCK_BUNDLE)/Contents/Resources/
+	@codesign --force --sign - --entitlements $(MOCK_ENTITLEMENTS) $(MOCK_BUNDLE) >/dev/null
+	@xattr -cr $(MOCK_BUNDLE) 2>/dev/null || true
+	@pkill -f "$(HELPER_BIN_NAME).app/Contents/MacOS" 2>/dev/null && sleep 0.5 || true
 	@pkill -f "ImpossiBLE-Mock" 2>/dev/null && sleep 0.5 || true
-	@Sources/MockApp/.build/debug/ImpossiBLE-Mock &
+	@open "$(MOCK_BUNDLE)"
 	@echo "Mock app relaunched (debug build)"
 
 $(MOCK_BIN): $(MOCK_SRCS) $(MOCK_PLIST) $(MOCK_ENTITLEMENTS) $(MOCK_FONT_RESOURCE)

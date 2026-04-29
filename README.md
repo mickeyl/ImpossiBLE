@@ -20,7 +20,7 @@ ImpossiBLE is a two-process architecture:
 
 2. **Helper** (runs natively on macOS) — A lightweight background app that listens on `/tmp/impossible.sock`, translates the JSON messages into real `CoreBluetooth` API calls, and sends results back.
 
-The repo also includes a **mock menu bar app** that listens on the same socket and serves configurable virtual BLE peripherals. A segmented **Off / Mock / Passthrough** control switches between modes — selecting one automatically stops the other. The menu bar icon reflects the active mode (strikethrough when off, plain when forwarding, dot-badged when mocking) and flashes on socket traffic so you can see activity at a glance. The mock app ships with several stock configurations — from a single heart rate monitor to a dense 12-device sensor environment — and lets you save/load your own. It can also capture nearby BLE advertisements into a new mock configuration; the factory icon in capture results means that advertisement includes manufacturer-specific data. A "Launch at Startup" option in the footer installs a LaunchAgent for automatic login startup. Server state is persisted and auto-restored on launch.
+The repo also includes a **mock menu bar app** that listens on the same socket and serves configurable virtual BLE peripherals. A segmented **Off / Mock / Passthrough** control switches between modes — selecting one automatically stops the other. The custom menu bar window stays open while you switch apps, or can be set to dismiss on app switch from the footer. The menu bar icon reflects the active mode (strikethrough when off, plain when forwarding, dot-badged when mocking) and flashes on mock or Passthrough traffic so you can see activity at a glance. In Passthrough mode, the app lists only devices your simulator app actually communicates with through GATT or L2CAP operations, not devices that were merely discovered while scanning. The mock app ships with several stock configurations — from a single heart rate monitor to a dense 12-device sensor environment — and lets you save/load your own. It can also capture nearby BLE advertisements into a new mock configuration; the factory icon in capture results means that advertisement includes manufacturer-specific data. A "Launch at Startup" option in the footer installs a LaunchAgent for automatic login startup. Server state is persisted and auto-restored on launch.
 
 Your app code remains unchanged — `CBCentralManager`, `CBPeripheral`, delegate callbacks, and all other CoreBluetooth types work as expected.
 
@@ -39,6 +39,7 @@ Your app code remains unchanged — `CBCentralManager`, `CBPeripheral`, delegate
 - **Connection-aware state**: `CBCentralManager.state` reflects actual socket connectivity — `poweredOn` when connected to a provider, `poweredOff` when not. `centralManagerDidUpdateState:` fires automatically on transitions, so your app reacts to the helper/mock starting or stopping just like it would to real Bluetooth state changes.
 - **Data encoding**: characteristic values and L2CAP payloads are base64-encoded across the wire.
 - **Service filter fidelity**: the helper enforces `discoverServices:` filters to match iOS behavior, even though macOS CoreBluetooth returns all cached services.
+- **Passthrough activity snapshot**: the helper writes current real-device communication activity to `/tmp/impossible-passthrough-activity.json` so the menu bar app can show which devices are actually being read, written, subscribed, or used through L2CAP.
 - **Callback fidelity**: delegate callbacks are dispatched back onto the original `CBCentralManager` delegate queue.
 
 ## Features
@@ -49,6 +50,8 @@ Your app code remains unchanged — `CBCentralManager`, `CBPeripheral`, delegate
 - Discover services, characteristics, and descriptors
 - Read, write (with/without response), and notify
 - L2CAP channel support (with timeout handling)
+- Passthrough device activity list for actual GATT/L2CAP communication
+- Persistent menu bar control panel with optional dismiss-on-app-switch behavior
 - Connection-aware `CBManagerState` with automatic `centralManagerDidUpdateState:` callbacks
 - Auto-reconnect when the provider starts after the app
 - Automatic `+load` activation — no setup code required
@@ -78,7 +81,7 @@ make run
 
 The iOS app always uses the same ImpossiBLE integration and connects to `/tmp/impossible.sock`. Switching modes is done by choosing which macOS app owns that socket.
 
-The mock menu bar app provides a segmented **Off / Mock / Passthrough** picker that handles this automatically — selecting a mode stops the other provider and starts the chosen one.
+The mock menu bar app provides a segmented **Off / Mock / Passthrough** picker that handles this automatically — selecting a mode stops the other provider and starts the chosen one. In Passthrough mode it also shows the real BLE devices that have seen actual read/write/subscribe/L2CAP traffic, with a short active indicator for current communication.
 
 From the command line:
 
@@ -118,7 +121,9 @@ When you save a capture, ImpossiBLE performs a deeper inspection for selected co
 | `restart` | Install, kill existing helper, and relaunch         |
 | `watch`   | Install, start, and auto-rebuild on source changes |
 | `mock`    | Build the mock menu bar `.app` bundle              |
+| `mock-relaunch` | Rebuild helper + debug mock app bundle and relaunch from the repo |
 | `mock-run`| Install and start the mock menu bar app            |
+| `mock-stop` | Stop the running mock menu bar app              |
 | `mock-assess` | Verify signing and Gatekeeper assessment      |
 | `mock-notarize` | Notarize and staple the mock menu bar app   |
 | `clean`   | Remove local build artifacts                       |
@@ -146,17 +151,17 @@ That is all. The library activates automatically via `+load` on simulator builds
 - **Single simulator app** — only one simulator app can connect to the helper at a time. A new client connection replaces the existing one; the previous client is dropped and the helper tears down scans, connections, and L2CAP channels. Multiple `CBCentralManager` instances within a single app are fully supported.
 - **Provider must be running** — the library auto-reconnects every 2 seconds, so you can start the helper or mock app before or after your simulator app. Until connected, `CBCentralManager.state` reports `poweredOff`.
 
-## Roadmap Beyond 1.0
+## Roadmap Beyond 2.0
 
-The goal remains full CoreBluetooth API coverage in the simulator. Real-device testing is still required, but this tracks what remains after the 1.0 release:
+The goal remains full CoreBluetooth API coverage in the simulator. Real-device testing is still required, but this tracks what remains after the 2.0 release:
 
 - [ ] **Peripheral role support** (advertising, GATT server, write/notify from the peripheral side).
 - [ ] **Multiple simulator clients** (concurrent apps connecting to the helper).
 - [x] **Full descriptor support** (discover/read/write descriptors beyond characteristics).
 - [ ] **Improved state/authorization fidelity** (authorization states, feature gating, and error codes matching device behavior). `CBManagerState` now tracks socket connectivity; remaining work is authorization edge cases.
 - [ ] **State restoration parity** (`CBCentralManager` restoration flows).
-- [ ] **Pairing / security flows** (bonding, encryption-required characteristics, and relevant errors).
-- [ ] **Performance + robustness** (larger payloads, stress testing). Auto-reconnect is now implemented.
+- [x] **Pairing / security flows** (bonding, encryption-required characteristics, and relevant errors) in mock mode. Remaining work: passthrough parity for every macOS pairing edge case.
+- [ ] **Performance + robustness** (larger payloads, stress testing). Auto-reconnect and Passthrough activity visibility are now implemented.
 - [x] **Configurable mocking schemes** — the mock menu bar app provides stock and user-defined device configurations with full control over services, characteristics, descriptors, and server availability. Remaining work: scripted fault injection and programmatic test automation.
 
 ## License

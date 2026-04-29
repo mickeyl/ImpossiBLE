@@ -4,6 +4,7 @@ struct CaptureSheet: View {
     @ObservedObject var store: MockStore
     @ObservedObject var server: MockServer
     @ObservedObject var forwarder: ForwarderController
+    var onClose: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
     @StateObject private var capture = CaptureSession()
@@ -70,7 +71,7 @@ struct CaptureSheet: View {
             .disabled(isSavingConfiguration || (!forwarder.canStart && !forwarder.isRunning))
 
             Button("Close") {
-                dismiss()
+                close()
             }
             .disabled(isSavingConfiguration)
         }
@@ -310,6 +311,14 @@ struct CaptureSheet: View {
             startedFromMock = false
             startedFromOff = false
             isSavingConfiguration = false
+            close()
+        }
+    }
+
+    private func close() {
+        if let onClose {
+            onClose()
+        } else {
             dismiss()
         }
     }

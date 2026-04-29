@@ -7,6 +7,7 @@
 #import <unistd.h>
 
 static const char *kCBSSocketPath = "/tmp/impossible.sock";
+static const char *kCBSActivityPath = "/tmp/impossible-passthrough-activity.json";
 static void *kCBSServiceIdKey = &kCBSServiceIdKey;
 static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
 static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
@@ -23,6 +24,7 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *streamToL2capId;
 @property(nonatomic, strong) NSMutableDictionary<NSUUID *, dispatch_source_t> *pendingL2capOpenTimers;
 @property(nonatomic, strong) NSMutableDictionary<NSUUID *, NSSet<CBUUID *> *> *pendingServiceFilters;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSMutableDictionary *> *activityByPeripheralId;
 @property(nonatomic, strong) NSArray<CBUUID *> *pendingServices;
 @property(nonatomic, strong) NSDictionary *pendingOptions;
 @property(nonatomic, strong) NSMutableSet<NSUUID *> *seenScanPeripherals;
@@ -47,6 +49,7 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
         _streamToL2capId = [NSMutableDictionary dictionary];
         _pendingL2capOpenTimers = [NSMutableDictionary dictionary];
         _pendingServiceFilters = [NSMutableDictionary dictionary];
+        _activityByPeripheralId = [NSMutableDictionary dictionary];
         _seenScanPeripherals = [NSMutableSet set];
         _scanShouldDeduplicate = YES;
         _clientFd = -1;
@@ -88,6 +91,7 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
 }
 
 - (void)start {
+    [self resetActivitySnapshot];
     [self startSocketServer];
 }
 
@@ -132,6 +136,7 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
                 NSLog(@"ImpossiBLE-Helper: client connected");
                 self.clientFd = client;
                 self.clientGeneration += 1;
+                [self resetActivitySnapshot];
                 uint64_t generation = self.clientGeneration;
                 [self startReaderForClient:client generation:generation];
             });
@@ -207,6 +212,7 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
     self.scanShouldDeduplicate = YES;
     self.pendingServices = nil;
     self.pendingOptions = nil;
+    [self resetActivitySnapshot];
 
     dispatch_async(self.cbQueue, ^{
         [self.central stopScan];
@@ -279,6 +285,101 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
     });
     self.pendingL2capOpenTimers[peripheralId] = timer;
     dispatch_resume(timer);
+}
+
+- (void)resetActivitySnapshot {
+    @synchronized (self) {
+        [self.activityByPeripheralId removeAllObjects];
+        [self writeActivitySnapshotLocked];
+    }
+}
+
+- (void)recordActivityForPeripheral:(CBPeripheral *)peripheral
+                           operation:(NSString *)operation
+                              detail:(NSString *)detail {
+    if (!peripheral.identifier || operation.length == 0) {
+        return;
+    }
+    NSString *name = peripheral.name ?: @"";
+    [self recordActivityForPeripheralId:peripheral.identifier.UUIDString
+                                   name:name
+                              operation:operation
+                                 detail:detail ?: @""];
+}
+
+- (void)recordActivityForPeripheralId:(NSString *)peripheralId
+                                 name:(NSString *)name
+                            operation:(NSString *)operation
+                               detail:(NSString *)detail {
+    if (peripheralId.length == 0 || operation.length == 0) {
+        return;
+    }
+
+    @synchronized (self) {
+        CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+        NSMutableDictionary *entry = self.activityByPeripheralId[peripheralId];
+        if (!entry) {
+            entry = [NSMutableDictionary dictionary];
+            entry[@"count"] = @0;
+            self.activityByPeripheralId[peripheralId] = entry;
+        }
+
+        NSString *resolvedName = name.length > 0 ? name : (entry[@"name"] ?: @"");
+        entry[@"id"] = peripheralId;
+        entry[@"name"] = resolvedName ?: @"";
+        entry[@"lastOperation"] = operation;
+        entry[@"lastDetail"] = detail ?: @"";
+        entry[@"lastAt"] = @(now);
+        entry[@"activeUntil"] = @(now + 1.5);
+        entry[@"count"] = @([entry[@"count"] unsignedIntegerValue] + 1);
+
+        [self writeActivitySnapshotLocked];
+    }
+}
+
+- (void)recordActivityForPeripheralIdString:(NSString *)uuidStr
+                                  operation:(NSString *)operation
+                                     detail:(NSString *)detail {
+    if (![uuidStr isKindOfClass:[NSString class]] || uuidStr.length == 0) {
+        return;
+    }
+    NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidStr];
+    CBPeripheral *peripheral = uuid ? self.peripherals[uuid] : nil;
+    [self recordActivityForPeripheralId:uuidStr
+                                   name:peripheral.name ?: @""
+                              operation:operation
+                                 detail:detail ?: @""];
+}
+
+- (NSString *)peripheralIdFromChannelId:(NSString *)channelId {
+    if (![channelId isKindOfClass:[NSString class]] || channelId.length == 0) {
+        return nil;
+    }
+    NSArray<NSString *> *parts = [channelId componentsSeparatedByString:@":"];
+    return parts.count > 0 ? parts[0] : nil;
+}
+
+- (void)writeActivitySnapshotLocked {
+    NSArray *devices = [[self.activityByPeripheralId allValues] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        NSNumber *aLast = a[@"lastAt"] ?: @0;
+        NSNumber *bLast = b[@"lastAt"] ?: @0;
+        return [bLast compare:aLast];
+    }];
+
+    NSDictionary *snapshot = @{
+        @"updatedAt": @(CFAbsoluteTimeGetCurrent()),
+        @"devices": devices ?: @[]
+    };
+    NSError *error = nil;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:snapshot options:0 error:&error];
+    if (!data) {
+        NSLog(@"ImpossiBLE-Helper: failed to encode activity snapshot: %@", error.localizedDescription);
+        return;
+    }
+    NSString *path = [NSString stringWithUTF8String:kCBSActivityPath];
+    if (![data writeToFile:path options:NSDataWritingAtomic error:&error]) {
+        NSLog(@"ImpossiBLE-Helper: failed to write activity snapshot: %@", error.localizedDescription);
+    }
 }
 
 - (void)handleMessageLine:(NSData *)line {
@@ -513,6 +614,9 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
         if (!chr) {
             return;
         }
+        [self recordActivityForPeripheral:chr.service.peripheral
+                                operation:@"Read"
+                                   detail:chr.UUID.UUIDString ?: @""];
         dispatch_async(self.cbQueue, ^{
             [chr.service.peripheral readValueForCharacteristic:chr];
         });
@@ -528,6 +632,9 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
         if (!descriptor) {
             return;
         }
+        [self recordActivityForPeripheral:descriptor.characteristic.service.peripheral
+                                operation:@"Read descriptor"
+                                   detail:descriptor.UUID.UUIDString ?: @""];
         dispatch_async(self.cbQueue, ^{
             [descriptor.characteristic.service.peripheral readValueForDescriptor:descriptor];
         });
@@ -552,6 +659,9 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
             data = [NSData data];
         }
         CBCharacteristicWriteType wt = writeType.integerValue == 1 ? CBCharacteristicWriteWithoutResponse : CBCharacteristicWriteWithResponse;
+        [self recordActivityForPeripheral:chr.service.peripheral
+                                operation:@"Write"
+                                   detail:chr.UUID.UUIDString ?: @""];
         dispatch_async(self.cbQueue, ^{
             [chr.service.peripheral writeValue:data forCharacteristic:chr type:wt];
         });
@@ -574,6 +684,9 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
         } else {
             data = [NSData data];
         }
+        [self recordActivityForPeripheral:descriptor.characteristic.service.peripheral
+                                operation:@"Write descriptor"
+                                   detail:descriptor.UUID.UUIDString ?: @""];
         dispatch_async(self.cbQueue, ^{
             [descriptor.characteristic.service.peripheral writeValue:data forDescriptor:descriptor];
         });
@@ -590,6 +703,9 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
         if (!chr) {
             return;
         }
+        [self recordActivityForPeripheral:chr.service.peripheral
+                                operation:(enabled.boolValue ? @"Subscribe" : @"Unsubscribe")
+                                   detail:chr.UUID.UUIDString ?: @""];
         dispatch_async(self.cbQueue, ^{
             [chr.service.peripheral setNotifyValue:enabled.boolValue forCharacteristic:chr];
         });
@@ -610,6 +726,8 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
         if (!peripheral) {
             return;
         }
+        NSString *detail = [NSString stringWithFormat:@"PSM %@", psmNum ?: @0];
+        [self recordActivityForPeripheral:peripheral operation:@"Open L2CAP" detail:detail];
         dispatch_async(self.cbQueue, ^{
             peripheral.delegate = self;
             CBL2CAPPSM psm = (CBL2CAPPSM)psmNum.unsignedShortValue;
@@ -629,6 +747,9 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
         if (!channel) {
             return;
         }
+        NSString *peripheralId = [self peripheralIdFromChannelId:chanId];
+        NSString *detail = [NSString stringWithFormat:@"PSM %u", channel.PSM];
+        [self recordActivityForPeripheralIdString:peripheralId operation:@"L2CAP write" detail:detail];
         NSData *data = [[NSData alloc] initWithBase64EncodedString:valueB64 options:0];
         if (!data) {
             return;
@@ -648,6 +769,9 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
         if (!channel) {
             return;
         }
+        NSString *peripheralId = [self peripheralIdFromChannelId:chanId];
+        NSString *detail = [NSString stringWithFormat:@"PSM %u", channel.PSM];
+        [self recordActivityForPeripheralIdString:peripheralId operation:@"L2CAP close" detail:detail];
         dispatch_async(dispatch_get_main_queue(), ^{
             channel.inputStream.delegate = nil;
             channel.outputStream.delegate = nil;
@@ -1346,6 +1470,10 @@ connectionEventDidOccur:(CBConnectionEvent)event
         NSInputStream *inStream = (NSInputStream *)aStream;
         NSInteger n = [inStream read:buf maxLength:sizeof(buf)];
         if (n > 0) {
+            NSString *peripheralId = [self peripheralIdFromChannelId:chanId];
+            CBL2CAPChannel *channel = self.l2capById[chanId];
+            NSString *detail = channel ? [NSString stringWithFormat:@"PSM %u", channel.PSM] : @"";
+            [self recordActivityForPeripheralIdString:peripheralId operation:@"L2CAP read" detail:detail];
             NSData *data = [NSData dataWithBytes:buf length:(NSUInteger)n];
             NSString *b64 = [data base64EncodedStringWithOptions:0];
             [self sendMessage:@{@"type": @"l2capData", @"channelId": chanId, @"value": b64}];

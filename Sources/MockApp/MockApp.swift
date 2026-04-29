@@ -6,26 +6,23 @@ struct MockApp: App {
     @StateObject private var store: MockStore
     @StateObject private var server: MockServer
     @StateObject private var forwarder: ForwarderController
+    @StateObject private var statusBar: StatusBarController
 
     init() {
         let store = MockStore()
         let server = MockServer(autoStart: false)
         let forwarder = ForwarderController()
+        let statusBar = StatusBarController(store: store, server: server, forwarder: forwarder)
 
         server.store = store
 
         _store = StateObject(wrappedValue: store)
         _server = StateObject(wrappedValue: server)
         _forwarder = StateObject(wrappedValue: forwarder)
+        _statusBar = StateObject(wrappedValue: statusBar)
 
         NSApplication.shared.setActivationPolicy(.accessory)
         Self.restorePersistedMode(server: server, forwarder: forwarder)
-    }
-
-    private var menuBarMode: FontAwesome.MenuBarMode {
-        if server.status != .stopped { return .mock }
-        if case .running = forwarder.status { return .passthrough }
-        return .off
     }
 
     private static func restorePersistedMode(server: MockServer, forwarder: ForwarderController) {
@@ -45,34 +42,8 @@ struct MockApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra {
-            MockMenuContent(store: store, server: server, forwarder: forwarder)
-                .frame(width: 360, height: 580)
-        } label: {
-            Image(nsImage: FontAwesome.brandImage(
-                FontAwesome.bluetoothB,
-                size: 16,
-                active: server.trafficActive,
-                mode: menuBarMode
-            ))
-            .accessibilityLabel("ImpossiBLE Mock")
+        Settings {
+            EmptyView()
         }
-        .menuBarExtraStyle(.window)
-
-        WindowGroup("Device Editor", for: UUID.self) { $deviceId in
-            NavigationStack {
-                DeviceEditorWindowContent(deviceId: deviceId, store: store)
-            }
-            .background(DeviceEditorWindowActivator())
-            .frame(minWidth: 720, minHeight: 760)
-        }
-        .defaultSize(width: 760, height: 820)
-
-        Window("Capture Nearby Devices", id: "capture") {
-            CaptureSheet(store: store, server: server, forwarder: forwarder)
-                .background(DeviceEditorWindowActivator())
-                .frame(minWidth: 640, minHeight: 560)
-        }
-        .defaultSize(width: 640, height: 560)
     }
 }
