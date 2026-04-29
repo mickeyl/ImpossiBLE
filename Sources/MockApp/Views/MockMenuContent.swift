@@ -14,6 +14,7 @@ struct MockMenuContent: View {
     @State private var saveConfigName = ""
     @State private var showSaveField = false
     @AppStorage(AppPreferences.dismissControlWindowOnDeactivateKey) private var dismissOnDeactivate = false
+    private static let statusIconColumnWidth: CGFloat = 24
 
     var body: some View {
         VStack(spacing: 0) {
@@ -39,6 +40,7 @@ struct MockMenuContent: View {
         .onAppear {
             server.store = store
         }
+        .background(Color.clear)
     }
 
     // MARK: - Mode
@@ -81,7 +83,7 @@ struct MockMenuContent: View {
             HStack {
                 Image(nsImage: FontAwesome.brandImage(FontAwesome.bluetoothB, size: 18))
                     .foregroundStyle(statusColor)
-                    .frame(width: 24)
+                    .frame(width: Self.statusIconColumnWidth, alignment: .center)
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Text("ImpossiBLE Mock")
                         .font(.headline)
@@ -154,9 +156,10 @@ struct MockMenuContent: View {
 
             case .passthrough:
                 HStack(spacing: 6) {
-                    Image(systemName: forwarder.trafficActive ? "bolt.horizontal.circle.fill" : "dot.radiowaves.left.and.right")
-                        .font(.caption)
-                        .foregroundStyle(forwarder.trafficActive ? .green : forwarderStatusColor)
+                    Circle()
+                        .fill(forwarder.trafficActive ? Color.green : forwarderStatusColor)
+                        .frame(width: 6, height: 6)
+                        .frame(width: Self.statusIconColumnWidth, alignment: .center)
                     Text(passthroughSummaryText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -500,10 +503,10 @@ struct MockMenuContent: View {
     private var passthroughBody: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Image(systemName: forwarder.trafficActive ? "bolt.horizontal.circle.fill" : "dot.radiowaves.left.and.right")
+                Image(systemName: forwarder.trafficActive ? "bolt.horizontal.circle.fill" : "antenna.radiowaves.left.and.right.circle")
                     .font(.title3)
                     .foregroundStyle(forwarder.trafficActive ? .green : forwarderStatusColor)
-                    .frame(width: 24)
+                    .frame(width: Self.statusIconColumnWidth, alignment: .center)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Passthrough")

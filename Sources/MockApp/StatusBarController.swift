@@ -7,6 +7,44 @@ final class ControlPanel: NSPanel {
     override var canBecomeMain: Bool { true }
 }
 
+final class TransparentHostingView<Content: View>: NSHostingView<Content> {
+    override var isOpaque: Bool { false }
+}
+
+final class MenuPanelContentView: NSVisualEffectView {
+    private let hostingView: NSView
+
+    init<Content: View>(rootView: Content, contentSize: NSSize, cornerRadius: CGFloat) {
+        hostingView = TransparentHostingView(rootView: rootView)
+        super.init(frame: NSRect(origin: .zero, size: contentSize))
+
+        material = .menu
+        blendingMode = .behindWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = cornerRadius
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
+        layer?.borderWidth = 0.5
+        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+
+        hostingView.frame = bounds
+        hostingView.autoresizingMask = [.width, .height]
+        hostingView.wantsLayer = true
+        hostingView.layer?.isOpaque = false
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        hostingView.layer?.cornerRadius = cornerRadius
+        hostingView.layer?.cornerCurve = .continuous
+        hostingView.layer?.masksToBounds = true
+        addSubview(hostingView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+
 @MainActor
 final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
     private let store: MockStore
@@ -18,6 +56,7 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
     private var deviceWindows: [UUID: NSWindow] = [:]
     private var cancellables: Set<AnyCancellable> = []
     private static let controlWindowContentSize = NSSize(width: 360, height: 580)
+    private static let controlWindowCornerRadius: CGFloat = 10
 
     init(store: MockStore, server: MockServer, forwarder: ForwarderController) {
         self.store = store
@@ -98,16 +137,21 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.contentViewController = NSHostingController(rootView: root)
+        window.contentView = MenuPanelContentView(
+            rootView: root,
+            contentSize: Self.controlWindowContentSize,
+            cornerRadius: Self.controlWindowCornerRadius
+        )
         window.delegate = self
         window.title = "ImpossiBLE Mock"
         window.isReleasedWhenClosed = false
         window.hasShadow = true
         window.isOpaque = false
-        window.backgroundColor = .windowBackgroundColor
+        window.backgroundColor = .clear
         window.level = .floating
         window.collectionBehavior = [.moveToActiveSpace]
         window.hidesOnDeactivate = AppPreferences.dismissControlWindowOnDeactivate
+        window.invalidateShadow()
         controlWindow = window
         return window
     }
