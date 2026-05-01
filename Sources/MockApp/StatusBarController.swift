@@ -11,22 +11,19 @@ final class TransparentHostingView<Content: View>: NSHostingView<Content> {
     override var isOpaque: Bool { false }
 }
 
-final class MenuPanelContentView: NSVisualEffectView {
+final class MenuPanelContentView: NSView {
     private let hostingView: NSView
+    private let cornerRadius: CGFloat
+
+    override var isOpaque: Bool { false }
 
     init<Content: View>(rootView: Content, contentSize: NSSize, cornerRadius: CGFloat) {
+        self.cornerRadius = cornerRadius
         hostingView = TransparentHostingView(rootView: rootView)
         super.init(frame: NSRect(origin: .zero, size: contentSize))
 
-        material = .menu
-        blendingMode = .behindWindow
-        state = .active
         wantsLayer = true
-        layer?.cornerRadius = cornerRadius
-        layer?.cornerCurve = .continuous
-        layer?.masksToBounds = true
-        layer?.borderWidth = 0.5
-        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
+        layer?.backgroundColor = NSColor.clear.cgColor
 
         hostingView.frame = bounds
         hostingView.autoresizingMask = [.width, .height]
@@ -37,6 +34,19 @@ final class MenuPanelContentView: NSVisualEffectView {
         hostingView.layer?.cornerCurve = .continuous
         hostingView.layer?.masksToBounds = true
         addSubview(hostingView)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        let rect = bounds.insetBy(dx: 0.25, dy: 0.25)
+        let path = NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
+        NSColor.windowBackgroundColor.setFill()
+        path.fill()
+
+        NSColor.separatorColor.withAlphaComponent(0.35).setStroke()
+        path.lineWidth = 0.5
+        path.stroke()
     }
 
     @available(*, unavailable)
