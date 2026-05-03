@@ -22,9 +22,19 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var descriptorValues: [ObjectIdentifier: Any] = [:]
     @Published var log: [LogEntry] = []
     @Published var isScanning = false
+    @Published var secondaryState: CBManagerState = .unknown
+    @Published var secondaryDiscovered: [DiscoveredPeripheral] = []
+    @Published var secondaryIsScanning = false
+    @Published var retrievedPeripherals: [CBPeripheral] = []
+    @Published var retrievedConnectedPeripherals: [CBPeripheral] = []
+    @Published var l2capStatus = "No channel"
+    @Published var l2capReceived: [Data] = []
 
     private var central: CBCentralManager!
+    private var secondaryCentral: CBCentralManager?
     private var peripheralMap: [UUID: CBPeripheral] = [:]
+    private var secondaryPeripheralMap: [UUID: CBPeripheral] = [:]
+    private var l2capChannel: CBL2CAPChannel?
 
     struct DiscoveredPeripheral: Identifiable {
         let id: UUID
@@ -45,15 +55,17 @@ final class BLEManager: NSObject, ObservableObject {
         central = CBCentralManager(delegate: self, queue: nil)
     }
 
-    func startScan() {
+    func startScan(serviceUUIDs: [CBUUID]? = nil, allowDuplicates: Bool = false) {
         guard state == .poweredOn else { return }
         discovered.removeAll()
         peripheralMap.removeAll()
-        central.scanForPeripherals(withServices: nil, options: [
-            CBCentralManagerScanOptionAllowDuplicatesKey: false,
-        ])
+        let options = [
+            CBCentralManagerScanOptionAllowDuplicatesKey: allowDuplicates,
+        ]
+        central.scanForPeripherals(withServices: serviceUUIDs, options: options)
         isScanning = true
-        appendLog("Scanning started")
+        let filter = serviceUUIDs?.map(\.uuidString).joined(separator: ", ") ?? "Any"
+        appendLog("Scanning started (services: \(filter), duplicates: \(allowDuplicates ? "on" : "off"))")
     }
 
     func stopScan() {
@@ -71,6 +83,7 @@ final class BLEManager: NSObject, ObservableObject {
 
     func disconnect() {
         guard let p = connectedPeripheral else { return }
+        closeL2CAPChannel()
         central.cancelPeripheralConnection(p)
         appendLog("Disconnecting\u{2026}")
     }
@@ -81,10 +94,28 @@ final class BLEManager: NSObject, ObservableObject {
         appendLog("Discovering services\u{2026}")
     }
 
+    func discoverServices(_ services: [CBUUID]) {
+        guard let p = connectedPeripheral else { return }
+        p.discoverServices(services)
+        appendLog("Discovering filtered services: \(services.map(\.uuidString).joined(separator: ", "))\u{2026}")
+    }
+
+    func discoverIncludedServices(for service: CBService) {
+        guard let p = connectedPeripheral else { return }
+        p.discoverIncludedServices(nil, for: service)
+        appendLog("Discovering included services for \(service.uuid.uuidString)\u{2026}")
+    }
+
     func discoverCharacteristics(for service: CBService) {
         guard let p = connectedPeripheral else { return }
         p.discoverCharacteristics(nil, for: service)
         appendLog("Discovering characteristics for \(service.uuid.uuidString)\u{2026}")
+    }
+
+    func discoverCharacteristics(_ characteristics: [CBUUID], for service: CBService) {
+        guard let p = connectedPeripheral else { return }
+        p.discoverCharacteristics(characteristics, for: service)
+        appendLog("Discovering filtered characteristics for \(service.uuid.uuidString): \(characteristics.map(\.uuidString).joined(separator: ", "))\u{2026}")
     }
 
     func discoverDescriptors(for characteristic: CBCharacteristic) {
@@ -117,9 +148,100 @@ final class BLEManager: NSObject, ObservableObject {
         appendLog("Reading descriptor \(descriptor.uuid.uuidString)\u{2026}")
     }
 
+    func writeValue(_ data: Data, for descriptor: CBDescriptor) {
+        guard let p = connectedPeripheral else { return }
+        p.writeValue(data, for: descriptor)
+        appendLog("Writing \(data.count) bytes to descriptor \(descriptor.uuid.uuidString)")
+    }
+
     func readRSSI() {
         connectedPeripheral?.readRSSI()
         appendLog("Reading RSSI\u{2026}")
+    }
+
+    func registerForConnectionEvents() {
+        central.registerForConnectionEvents(options: nil)
+        appendLog("Registered for connection events")
+    }
+
+    func retrieveDiscoveredPeripherals() {
+        let identifiers = discovered.map(\.id)
+        retrievedPeripherals = central.retrievePeripherals(withIdentifiers: identifiers)
+        appendLog("retrievePeripherals returned \(retrievedPeripherals.count) peripheral(s)")
+    }
+
+    func retrieveConnectedPeripherals(services: [CBUUID]) {
+        guard !services.isEmpty else {
+            retrievedConnectedPeripherals = []
+            appendLog("retrieveConnectedPeripherals needs at least one service UUID")
+            return
+        }
+        retrievedConnectedPeripherals = central.retrieveConnectedPeripherals(withServices: services)
+        appendLog("retrieveConnectedPeripherals returned \(retrievedConnectedPeripherals.count) peripheral(s)")
+    }
+
+    func startSecondaryScan(serviceUUIDs: [CBUUID]? = nil) {
+        if secondaryCentral == nil {
+            secondaryCentral = CBCentralManager(delegate: self, queue: nil)
+        }
+        guard secondaryCentral?.state == .poweredOn else {
+            appendLog("Secondary central waiting for poweredOn")
+            return
+        }
+        secondaryDiscovered.removeAll()
+        secondaryPeripheralMap.removeAll()
+        secondaryCentral?.scanForPeripherals(withServices: serviceUUIDs, options: [
+            CBCentralManagerScanOptionAllowDuplicatesKey: false,
+        ])
+        secondaryIsScanning = true
+        let filter = serviceUUIDs?.map(\.uuidString).joined(separator: ", ") ?? "Any"
+        appendLog("Secondary scan started (services: \(filter))")
+    }
+
+    func stopSecondaryScan() {
+        secondaryCentral?.stopScan()
+        secondaryIsScanning = false
+        appendLog("Secondary scan stopped")
+    }
+
+    func openL2CAPChannel(psm: CBL2CAPPSM) {
+        guard let p = connectedPeripheral else { return }
+        closeL2CAPChannel()
+        l2capStatus = "Opening PSM \(psm)\u{2026}"
+        l2capReceived = []
+        p.openL2CAPChannel(psm)
+        appendLog("Opening L2CAP channel PSM \(psm)\u{2026}")
+    }
+
+    func writeL2CAP(_ data: Data) {
+        guard let stream = l2capChannel?.outputStream else {
+            appendLog("No L2CAP output stream")
+            return
+        }
+        let written = data.withUnsafeBytes { ptr -> Int in
+            guard let base = ptr.bindMemory(to: UInt8.self).baseAddress else { return 0 }
+            return stream.write(base, maxLength: data.count)
+        }
+        appendLog("L2CAP wrote \(written) of \(data.count) bytes")
+    }
+
+    func closeL2CAPChannel() {
+        guard let channel = l2capChannel else { return }
+        channel.inputStream.delegate = nil
+        channel.outputStream.delegate = nil
+        channel.inputStream.close()
+        channel.outputStream.close()
+        l2capChannel = nil
+        l2capStatus = "Closed"
+        appendLog("L2CAP channel closed")
+    }
+
+    var canSendWriteWithoutResponse: Bool {
+        connectedPeripheral?.canSendWriteWithoutResponse ?? false
+    }
+
+    func maximumWriteValueLength(for type: CBCharacteristicWriteType) -> Int {
+        connectedPeripheral?.maximumWriteValueLength(for: type) ?? 0
     }
 
     func cachedValue(for characteristic: CBCharacteristic) -> Data? {
@@ -148,8 +270,19 @@ final class BLEManager: NSObject, ObservableObject {
 
 extension BLEManager: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        if central === secondaryCentral {
+            secondaryState = central.state
+            appendLog("Secondary state: \(central.state.name)")
+            if central.state != .poweredOn {
+                secondaryIsScanning = false
+                secondaryDiscovered.removeAll()
+                secondaryPeripheralMap.removeAll()
+            }
+            return
+        }
+
         state = central.state
-        appendLog("State: \(central.state.name)")
+        appendLog("State: \(central.state.name); authorization: \(CBManager.authorization.name)")
         if central.state == .poweredOn {
             startScan()
         } else {
@@ -158,25 +291,48 @@ extension BLEManager: CBCentralManagerDelegate {
             services = []
             discovered.removeAll()
             peripheralMap.removeAll()
+            retrievedPeripherals = []
+            retrievedConnectedPeripherals = []
+            closeL2CAPChannel()
         }
     }
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
+        if central === secondaryCentral {
+            let id = peripheral.identifier
+            secondaryPeripheralMap[id] = peripheral
+            if let idx = secondaryDiscovered.firstIndex(where: { $0.id == id }) {
+                secondaryDiscovered[idx].rssi = RSSI.intValue
+                secondaryDiscovered[idx].name = peripheral.name ?? "Unknown"
+                secondaryDiscovered[idx].advertisementData = advertisementData
+            } else {
+                secondaryDiscovered.append(DiscoveredPeripheral(
+                    id: id, peripheral: peripheral,
+                    name: peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? "Unknown",
+                    rssi: RSSI.intValue,
+                    advertisementData: advertisementData
+                ))
+            }
+            appendLog("Secondary discovered: \(peripheral.name ?? "?") RSSI=\(RSSI)")
+            return
+        }
+
         let id = peripheral.identifier
         peripheralMap[id] = peripheral
         if let idx = discovered.firstIndex(where: { $0.id == id }) {
             discovered[idx].rssi = RSSI.intValue
-            discovered[idx].name = peripheral.name ?? "Unknown"
+            discovered[idx].name = peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? "Unknown"
+            discovered[idx].advertisementData = advertisementData
         } else {
             discovered.append(DiscoveredPeripheral(
                 id: id, peripheral: peripheral,
-                name: peripheral.name ?? "Unknown",
+                name: peripheral.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? "Unknown",
                 rssi: RSSI.intValue,
                 advertisementData: advertisementData
             ))
         }
-        appendLog("Discovered: \(peripheral.name ?? "?") RSSI=\(RSSI)")
+        appendLog("Discovered: \(peripheral.name ?? "?") RSSI=\(RSSI), adv=\(advertisementSummary(advertisementData))")
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
@@ -184,6 +340,7 @@ extension BLEManager: CBCentralManagerDelegate {
         services = []
         characteristicValues = [:]
         descriptorValues = [:]
+        retrievedConnectedPeripherals = []
         appendLog("Connected to \(peripheral.name ?? peripheral.identifier.uuidString)")
     }
 
@@ -198,6 +355,10 @@ extension BLEManager: CBCentralManagerDelegate {
         }
         appendLog("Disconnected\(error.map { ": \($0.localizedDescription)" } ?? "")")
     }
+
+    func centralManager(_ central: CBCentralManager, connectionEventDidOccur event: CBConnectionEvent, for peripheral: CBPeripheral) {
+        appendLog("Connection event: \(event.name) for \(peripheral.name ?? peripheral.identifier.uuidString)")
+    }
 }
 
 // MARK: - CBPeripheralDelegate
@@ -210,6 +371,16 @@ extension BLEManager: CBPeripheralDelegate {
         }
         services = peripheral.services ?? []
         appendLog("Found \(services.count) service(s)")
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverIncludedServicesFor service: CBService, error: Error?) {
+        if let error {
+            appendLog("Included service discovery error: \(error.localizedDescription)")
+            return
+        }
+        let included = service.includedServices ?? []
+        appendLog("Found \(included.count) included service(s) in \(service.uuid.uuidString)")
+        objectWillChange.send()
     }
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
@@ -268,7 +439,15 @@ extension BLEManager: CBPeripheralDelegate {
         }
         descriptorValues[ObjectIdentifier(descriptor)] = descriptor.value
         let key = "\(descriptor.characteristic?.uuid.uuidString ?? "?"):\(descriptor.uuid.uuidString)"
-        appendLog("Descriptor[\(key)] = \(descriptor.value ?? "nil")")
+        appendLog("Descriptor[\(key)] = \(valueSummary(descriptor.value))")
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didWriteValueFor descriptor: CBDescriptor, error: Error?) {
+        if let error {
+            appendLog("Descriptor write error: \(error.localizedDescription)")
+        } else {
+            appendLog("Descriptor write confirmed for \(descriptor.uuid.uuidString)")
+        }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
@@ -276,6 +455,70 @@ extension BLEManager: CBPeripheralDelegate {
             appendLog("RSSI error: \(error.localizedDescription)")
         } else {
             appendLog("RSSI = \(RSSI) dBm")
+        }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didOpen channel: CBL2CAPChannel?, error: Error?) {
+        if let error {
+            l2capChannel = nil
+            l2capStatus = "Open failed: \(error.localizedDescription)"
+            appendLog("L2CAP open error: \(error.localizedDescription)")
+            return
+        }
+        guard let channel else {
+            l2capChannel = nil
+            l2capStatus = "Open failed: no channel"
+            appendLog("L2CAP open callback without channel")
+            return
+        }
+        l2capChannel = channel
+        channel.inputStream.delegate = self
+        channel.outputStream.delegate = self
+        channel.inputStream.schedule(in: .main, forMode: .default)
+        channel.outputStream.schedule(in: .main, forMode: .default)
+        l2capStatus = "Open PSM \(channel.psm)"
+        appendLog("L2CAP open PSM \(channel.psm)")
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
+        appendLog("Modified services: \(invalidatedServices.map(\.uuid.uuidString).joined(separator: ", "))")
+        services.removeAll { service in
+            invalidatedServices.contains { $0.uuid == service.uuid }
+        }
+    }
+
+    func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        appendLog("Peripheral ready for write without response")
+        objectWillChange.send()
+    }
+}
+
+// MARK: - StreamDelegate
+
+extension BLEManager: StreamDelegate {
+    func stream(_ aStream: Stream, handle eventCode: Stream.Event) {
+        if eventCode.contains(.hasBytesAvailable), let input = aStream as? InputStream {
+            var buffer = [UInt8](repeating: 0, count: 1024)
+            let count = input.read(&buffer, maxLength: buffer.count)
+            if count > 0 {
+                let data = Data(buffer.prefix(count))
+                l2capReceived.insert(data, at: 0)
+                appendLog("L2CAP received \(count) bytes: \(dataSummary(data))")
+            }
+        }
+
+        if eventCode.contains(.hasSpaceAvailable) {
+            appendLog("L2CAP output stream ready")
+        }
+
+        if eventCode.contains(.errorOccurred) {
+            l2capStatus = "Stream error"
+            appendLog("L2CAP stream error: \(aStream.streamError?.localizedDescription ?? "unknown")")
+        }
+
+        if eventCode.contains(.endEncountered) {
+            l2capStatus = "Stream ended"
+            appendLog("L2CAP stream ended")
         }
     }
 }
@@ -300,6 +543,9 @@ struct ScanView: View {
     @StateObject private var ble = BLEManager()
     @State private var path = NavigationPath()
     @State private var isLogPresented = false
+    @State private var scanFilter = ""
+    @State private var retrieveConnectedFilter = "180D 180F 180A"
+    @State private var allowDuplicates = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -315,6 +561,65 @@ struct ScanView: View {
                             ProgressView()
                                 .controlSize(.small)
                         }
+                    }
+                }
+
+                Section("Scan") {
+                    TextField("Service filter, e.g. 180D 180F", text: $scanFilter)
+                        .font(.system(.body, design: .monospaced))
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    Toggle("Allow duplicate advertisements", isOn: $allowDuplicates)
+                    HStack {
+                        Button(ble.isScanning ? "Stop Primary" : "Start Primary") {
+                            if ble.isScanning {
+                                ble.stopScan()
+                            } else {
+                                ble.startScan(serviceUUIDs: cbUUIDs(from: scanFilter), allowDuplicates: allowDuplicates)
+                            }
+                        }
+                        .disabled(ble.state != .poweredOn)
+
+                        Button(ble.secondaryIsScanning ? "Stop Secondary" : "Start Secondary") {
+                            if ble.secondaryIsScanning {
+                                ble.stopSecondaryScan()
+                            } else {
+                                ble.startSecondaryScan(serviceUUIDs: cbUUIDs(from: scanFilter))
+                            }
+                        }
+                        .disabled(ble.secondaryState != .poweredOn && ble.secondaryIsScanning)
+                    }
+                    Text("Secondary central: \(ble.secondaryState.name), \(ble.secondaryDiscovered.count) discovered")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Central APIs") {
+                    Button("Register for Connection Events") {
+                        ble.registerForConnectionEvents()
+                    }
+                    .disabled(ble.state != .poweredOn)
+
+                    Button("Retrieve Discovered Peripherals") {
+                        ble.retrieveDiscoveredPeripherals()
+                    }
+                    .disabled(ble.discovered.isEmpty)
+
+                    TextField("Connected service UUIDs", text: $retrieveConnectedFilter)
+                        .font(.system(.body, design: .monospaced))
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+
+                    Button("Retrieve Connected Peripherals") {
+                        ble.retrieveConnectedPeripherals(services: cbUUIDs(from: retrieveConnectedFilter) ?? [])
+                    }
+                    .disabled(ble.state != .poweredOn || (cbUUIDs(from: retrieveConnectedFilter) ?? []).isEmpty)
+
+                    if !ble.retrievedPeripherals.isEmpty || !ble.retrievedConnectedPeripherals.isEmpty {
+                        RetrievedPeripheralsView(
+                            retrieved: ble.retrievedPeripherals,
+                            connected: ble.retrievedConnectedPeripherals
+                        )
                     }
                 }
 
@@ -364,6 +669,9 @@ struct ScanView: View {
                                         Text(device.id.uuidString)
                                             .font(.caption2.monospaced())
                                             .foregroundStyle(.secondary)
+                                        Text(advertisementSummary(device.advertisementData))
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
                                     }
                                     Spacer()
                                     Text("\(device.rssi) dBm")
@@ -382,7 +690,7 @@ struct ScanView: View {
                 LogToolbarItem(isLogPresented: $isLogPresented)
                 ToolbarItem(placement: .topBarLeading) {
                     Button(ble.isScanning ? "Stop" : "Scan") {
-                        ble.isScanning ? ble.stopScan() : ble.startScan()
+                        ble.isScanning ? ble.stopScan() : ble.startScan(serviceUUIDs: cbUUIDs(from: scanFilter), allowDuplicates: allowDuplicates)
                     }
                     .disabled(ble.state != .poweredOn)
                 }
@@ -416,20 +724,84 @@ struct ScanView: View {
 struct PeripheralDetailView: View {
     @ObservedObject var ble: BLEManager
     @Binding var isLogPresented: Bool
+    @State private var serviceFilter = ""
+    @State private var characteristicFilter = ""
+    @State private var l2capPSM = "25"
+    @State private var l2capHex = ""
 
     var body: some View {
         List {
             Section {
                 Button("Discover Services") { ble.discoverServices() }
+                TextField("Filtered service UUIDs", text: $serviceFilter)
+                    .font(.system(.body, design: .monospaced))
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                Button("Discover Filtered Services") {
+                    ble.discoverServices(cbUUIDs(from: serviceFilter) ?? [])
+                }
+                .disabled((cbUUIDs(from: serviceFilter) ?? []).isEmpty)
                 Button("Read RSSI") { ble.readRSSI() }
+                Text("Max write: \(ble.maximumWriteValueLength(for: .withResponse)) response / \(ble.maximumWriteValueLength(for: .withoutResponse)) no-response bytes")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Can send write without response: \(ble.canSendWriteWithoutResponse ? "Yes" : "No")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("L2CAP") {
+                TextField("PSM", text: $l2capPSM)
+                    .font(.system(.body, design: .monospaced))
+                    .keyboardType(.numberPad)
+                Button("Open Channel") {
+                    if let psm = UInt16(l2capPSM.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                        ble.openL2CAPChannel(psm: psm)
+                    }
+                }
+                .disabled(UInt16(l2capPSM.trimmingCharacters(in: .whitespacesAndNewlines)) == nil)
+
+                TextField("L2CAP write hex", text: $l2capHex)
+                    .font(.system(.body, design: .monospaced))
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                HStack {
+                    Button("Write") {
+                        guard let data = hexToData(l2capHex) else { return }
+                        ble.writeL2CAP(data)
+                    }
+                    .disabled(!isL2CAPHexValid)
+                    Button("Close") { ble.closeL2CAPChannel() }
+                }
+                Text(ble.l2capStatus)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(Array(ble.l2capReceived.enumerated()), id: \.offset) { _, data in
+                    Text(dataSummary(data))
+                        .font(.caption2.monospaced())
+                }
             }
 
             ForEach(servicesByUUID, id: \.uuid) { service in
                 Section {
                     serviceHeader(service)
+                    Button("Discover Included Services") {
+                        ble.discoverIncludedServices(for: service)
+                    }
+                    .font(.caption)
 
                     let characteristics = characteristicsByUUID(for: service)
                     if !characteristics.isEmpty {
+                        TextField("Characteristic filter", text: $characteristicFilter)
+                            .font(.system(.caption, design: .monospaced))
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                        Button("Discover Filtered Characteristics") {
+                            ble.discoverCharacteristics(cbUUIDs(from: characteristicFilter) ?? [], for: service)
+                        }
+                        .font(.caption)
+                        .disabled((cbUUIDs(from: characteristicFilter) ?? []).isEmpty)
+
                         ForEach(characteristics, id: \.uuid) { ch in
                             NavigationLink {
                                 CharacteristicDetailView(
@@ -465,6 +837,10 @@ struct PeripheralDetailView: View {
         (service.characteristics ?? []).sortedByUUID()
     }
 
+    private var isL2CAPHexValid: Bool {
+        hexToData(l2capHex) != nil
+    }
+
     @ViewBuilder
     private func serviceHeader(_ service: CBService) -> some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -476,6 +852,14 @@ struct PeripheralDetailView: View {
                     .foregroundStyle(.secondary)
                 Text("\(service.characteristics?.count ?? 0) characteristics")
                     .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("\(service.includedServices?.count ?? 0) included")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let included = service.includedServices, !included.isEmpty {
+                Text("Included: \(included.map(\.uuid.uuidString).joined(separator: ", "))")
+                    .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
             }
         }
@@ -550,7 +934,7 @@ struct CharacteristicDetailView: View {
                         .disabled(!isWriteHexValid)
                     }
 
-                    if !isWriteHexValid {
+                    if !writeHex.isEmpty && !isWriteHexValid {
                         Text("Enter an even number of hex digits.")
                             .font(.caption)
                             .foregroundStyle(.red)
@@ -577,17 +961,17 @@ struct CharacteristicDetailView: View {
             if !descriptors.isEmpty {
                 Section("Descriptors") {
                     ForEach(descriptors, id: \.uuid) { desc in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(desc.uuid.uuidString)
-                                .font(.caption.monospaced())
-                            Button("Read") {
-                                ble.readValue(for: desc)
-                            }
-                            .font(.caption)
-                            if let val = ble.cachedValue(for: desc) {
-                                Text("Value: \(String(describing: val))")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                        NavigationLink {
+                            DescriptorDetailView(ble: ble, descriptor: desc, isLogPresented: $isLogPresented)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(desc.uuid.uuidString)
+                                    .font(.caption.monospaced())
+                                if let val = ble.cachedValue(for: desc) {
+                                    Text(valueSummary(val))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
                     }
@@ -607,6 +991,68 @@ struct CharacteristicDetailView: View {
 
     private var descriptorsByUUID: [CBDescriptor] {
         (characteristic.descriptors ?? []).sortedByUUID()
+    }
+}
+
+// MARK: - Descriptor Detail
+
+struct DescriptorDetailView: View {
+    @ObservedObject var ble: BLEManager
+    let descriptor: CBDescriptor
+    @Binding var isLogPresented: Bool
+    @State private var writeHex = ""
+
+    var body: some View {
+        List {
+            Section("Descriptor") {
+                Text(descriptor.uuid.uuidString)
+                    .font(.system(.body, design: .monospaced))
+                if let characteristic = descriptor.characteristic {
+                    Text("Characteristic: \(characteristic.uuid.uuidString)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Actions") {
+                Button("Read Descriptor") {
+                    ble.readValue(for: descriptor)
+                }
+
+                TextField("Hex value", text: $writeHex)
+                    .font(.system(.body, design: .monospaced))
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+
+                Button("Write Descriptor") {
+                    guard let data = hexToData(writeHex) else { return }
+                    ble.writeValue(data, for: descriptor)
+                }
+                .disabled(!isWriteHexValid)
+
+                if !writeHex.isEmpty && !isWriteHexValid {
+                    Text("Enter an even number of hex digits.")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+
+            if let value = ble.cachedValue(for: descriptor) {
+                Section("Current Value") {
+                    Text(valueSummary(value))
+                        .font(.caption.monospaced())
+                }
+            }
+        }
+        .navigationTitle(descriptor.uuid.uuidString)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            LogToolbarItem(isLogPresented: $isLogPresented)
+        }
+    }
+
+    private var isWriteHexValid: Bool {
+        hexToData(writeHex) != nil
     }
 }
 
@@ -679,6 +1125,32 @@ struct LogToolbarItem: ToolbarContent {
     }
 }
 
+struct RetrievedPeripheralsView: View {
+    let retrieved: [CBPeripheral]
+    let connected: [CBPeripheral]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !retrieved.isEmpty {
+                Text("Retrieved: \(names(retrieved))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if !connected.isEmpty {
+                Text("Connected: \(names(connected))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func names(_ peripherals: [CBPeripheral]) -> String {
+        peripherals
+            .map { $0.name ?? $0.identifier.uuidString }
+            .joined(separator: ", ")
+    }
+}
+
 // MARK: - Helpers
 
 func propertiesString(_ props: CBCharacteristicProperties) -> String {
@@ -692,6 +1164,28 @@ func propertiesString(_ props: CBCharacteristicProperties) -> String {
     if props.contains(.authenticatedSignedWrites) { parts.append("SignedWrite") }
     if props.contains(.extendedProperties)     { parts.append("ExtProps") }
     return parts.isEmpty ? "None" : parts.joined(separator: ", ")
+}
+
+extension CBManagerAuthorization {
+    var name: String {
+        switch self {
+            case .notDetermined: "Not Determined"
+            case .restricted:    "Restricted"
+            case .denied:        "Denied"
+            case .allowedAlways: "Allowed Always"
+            @unknown default:    "Authorization(\(rawValue))"
+        }
+    }
+}
+
+extension CBConnectionEvent {
+    var name: String {
+        switch self {
+            case .peerDisconnected: "Peer Disconnected"
+            case .peerConnected:    "Peer Connected"
+            @unknown default:       "ConnectionEvent(\(rawValue))"
+        }
+    }
 }
 
 private protocol CBUUIDSortable {
@@ -710,8 +1204,18 @@ private extension Array where Element: CBUUIDSortable {
     }
 }
 
+func cbUUIDs(from text: String) -> [CBUUID]? {
+    let tokens = text
+        .split { $0 == "," || $0 == " " || $0 == "\n" || $0 == "\t" || $0 == ";" }
+        .map(String.init)
+    guard !tokens.isEmpty else { return nil }
+    return tokens.map { CBUUID(string: $0) }
+}
+
 func hexToData(_ hex: String) -> Data? {
-    let clean = hex.filter { $0.isHexDigit }
+    let clean = hex.filter { !$0.isWhitespace && $0 != "," && $0 != ":" && $0 != "-" }
+    guard !clean.isEmpty else { return nil }
+    guard clean.allSatisfy(\.isHexDigit) else { return nil }
     guard clean.count % 2 == 0 else { return nil }
     var data = Data()
     var i = clean.startIndex
@@ -722,4 +1226,44 @@ func hexToData(_ hex: String) -> Data? {
         i = next
     }
     return data
+}
+
+func dataSummary(_ data: Data) -> String {
+    let hex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
+    if let utf8 = String(data: data, encoding: .utf8), !utf8.isEmpty {
+        return "\(hex) (\(utf8))"
+    }
+    return hex.isEmpty ? "empty" : hex
+}
+
+func valueSummary(_ value: Any?) -> String {
+    guard let value else { return "nil" }
+    if let data = value as? Data {
+        return dataSummary(data)
+    }
+    return String(describing: value)
+}
+
+func advertisementSummary(_ advertisementData: [String: Any]) -> String {
+    var parts: [String] = []
+    if let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String, !name.isEmpty {
+        parts.append("name=\(name)")
+    }
+    if let connectable = advertisementData[CBAdvertisementDataIsConnectable] as? Bool {
+        parts.append(connectable ? "connectable" : "not connectable")
+    } else if let connectable = advertisementData[CBAdvertisementDataIsConnectable] as? NSNumber {
+        parts.append(connectable.boolValue ? "connectable" : "not connectable")
+    }
+    if let uuids = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID], !uuids.isEmpty {
+        parts.append("services=\(uuids.map(\.uuidString).joined(separator: ","))")
+    } else if let uuids = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [String], !uuids.isEmpty {
+        parts.append("services=\(uuids.joined(separator: ","))")
+    }
+    if let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data {
+        parts.append("mfg=\(manufacturerData.count)b")
+    }
+    if let txPower = advertisementData[CBAdvertisementDataTxPowerLevelKey] {
+        parts.append("tx=\(txPower)")
+    }
+    return parts.isEmpty ? "No advertisement fields" : parts.joined(separator: " | ")
 }

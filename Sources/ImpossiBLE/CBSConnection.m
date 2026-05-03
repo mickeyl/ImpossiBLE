@@ -15,6 +15,7 @@ static BOOL gConnected = NO;
 static dispatch_source_t gReconnectTimer;
 
 static void cbs_schedule_reconnect(void);
+static void cbs_handle_disconnect(int fd);
 static void cbs_start_reader(int fd);
 
 static int cbs_find_newline(NSData *data) {
@@ -49,16 +50,6 @@ static void cbs_set_connected(BOOL connected) {
     }
 }
 
-static void cbs_on_disconnect(void) {
-    if (gSockFd >= 0) {
-        close(gSockFd);
-        gSockFd = -1;
-    }
-    gReadQueue = nil;
-    cbs_set_connected(NO);
-    cbs_schedule_reconnect();
-}
-
 static void cbs_start_reader(int fd) {
     if (gReadQueue) {
         return;
@@ -83,9 +74,7 @@ static void cbs_start_reader(int fd) {
                 cbs_handle_line(line);
             }
         }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            cbs_on_disconnect();
-        });
+        cbs_handle_disconnect(fd);
     });
 }
 
@@ -141,6 +130,22 @@ static int cbs_connect(void) {
     NSLog(@"ImpossiBLE: connect(%s) failed after retries", kCBSSocketPath);
     cbs_schedule_reconnect();
     return -1;
+}
+
+static void cbs_handle_disconnect(int fd) {
+    if (!gWriteQueue) {
+        gWriteQueue = dispatch_queue_create("impossible.writer", DISPATCH_QUEUE_SERIAL);
+    }
+    dispatch_async(gWriteQueue, ^{
+        if (gSockFd != fd) {
+            return;
+        }
+        close(gSockFd);
+        gSockFd = -1;
+        gReadQueue = nil;
+        cbs_set_connected(NO);
+        cbs_schedule_reconnect();
+    });
 }
 
 static void cbs_schedule_reconnect(void) {
@@ -207,8 +212,7 @@ void CBSConnectionSend(NSDictionary *msg) {
         }
         if (!cbs_write_all(fd, data.bytes, data.length) || !cbs_write_all(fd, "\n", 1)) {
             NSLog(@"ImpossiBLE: send failed — socket write error");
-            close(fd);
-            gSockFd = -1;
+            cbs_handle_disconnect(fd);
             return;
         }
         NSLog(@"ImpossiBLE: sent %lu bytes (type=%@)", (unsigned long)data.length, msg[@"type"]);

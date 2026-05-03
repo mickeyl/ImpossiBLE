@@ -22,6 +22,7 @@ final class MockServer: ObservableObject {
     // Guarded by ioQueue
     private var serverFd: Int32 = -1
     private var clientFd: Int32 = -1
+    private var clientGeneration: UInt64 = 0
     private var acceptSource: DispatchSourceRead?
     private var readSource: DispatchSourceRead?
     private var readBuffer = Data()
@@ -114,6 +115,7 @@ final class MockServer: ObservableObject {
                 close(clientFd)
                 clientFd = -1
             }
+            clientGeneration &+= 1
 
             acceptSource?.cancel()
             acceptSource = nil
@@ -149,10 +151,13 @@ final class MockServer: ObservableObject {
         guard fd >= 0 else { return }
 
         if clientFd >= 0 {
-            readSource?.cancel()
-            close(clientFd)
+            close(fd)
+            log("Rejected additional client")
+            return
         }
         clientFd = fd
+        clientGeneration &+= 1
+        let generation = clientGeneration
         readBuffer.removeAll()
         connectedPeripherals.removeAll()
         pairedPeripherals.removeAll()
@@ -168,17 +173,20 @@ final class MockServer: ObservableObject {
 
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: ioQueue)
         source.setEventHandler { [weak self] in
-            self?.readFromClient(fd: fd)
+            self?.readFromClient(fd: fd, generation: generation)
         }
         source.setCancelHandler { }
         source.resume()
         readSource = source
     }
 
-    private func readFromClient(fd: Int32) {
+    private func readFromClient(fd: Int32, generation: UInt64) {
         var buf = [UInt8](repeating: 0, count: 2048)
         let n = read(fd, &buf, buf.count)
         if n <= 0 {
+            guard fd == clientFd, generation == clientGeneration else {
+                return
+            }
             readSource?.cancel()
             readSource = nil
             close(fd)

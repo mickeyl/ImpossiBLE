@@ -130,8 +130,9 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
             }
             dispatch_async(self.ioQueue, ^{
                 if (self.clientFd >= 0) {
-                    NSLog(@"ImpossiBLE-Helper: replacing existing client");
-                    [self handleClientDisconnectLockedForFd:self.clientFd generation:self.clientGeneration];
+                    NSLog(@"ImpossiBLE-Helper: rejecting additional client");
+                    close(client);
+                    return;
                 }
                 NSLog(@"ImpossiBLE-Helper: client connected");
                 self.clientFd = client;
