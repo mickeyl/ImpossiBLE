@@ -14,7 +14,7 @@ struct MockMenuContent: View {
     @State private var saveConfigName = ""
     @State private var showSaveField = false
     @AppStorage(AppPreferences.dismissControlWindowOnDeactivateKey) private var dismissOnDeactivate = false
-    private static let statusIconColumnWidth: CGFloat = 24
+    fileprivate static let statusIconColumnWidth: CGFloat = 24
 
     var body: some View {
         VStack(spacing: 0) {
@@ -120,53 +120,14 @@ struct MockMenuContent: View {
 
     @ViewBuilder
     private var modeStatusDetail: some View {
-        switch currentMode {
-            case .off:
-                EmptyView()
-
-            case .mock:
-                VStack(spacing: 4) {
-                    HStack(spacing: 8) {
-                        Label(deviceSummary, systemImage: "antenna.radiowaves.left.and.right.circle")
-                            .controlSize(.small)
-                        Spacer()
-                        HStack(spacing: 4) {
-                            Circle()
-                                .fill(statusColor)
-                                .frame(width: 6, height: 6)
-                            Text(statusText)
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                    if !server.lastActivity.isEmpty {
-                        HStack {
-                            Image(systemName: "arrow.left.arrow.right")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            Text(server.lastActivity)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                            Spacer()
-                        }
-                    }
-                }
-
-            case .passthrough:
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(forwarder.trafficActive ? Color.green : forwarderStatusColor)
-                        .frame(width: 6, height: 6)
-                        .frame(width: Self.statusIconColumnWidth, alignment: .center)
-                    Text(passthroughSummaryText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer()
-                }
-        }
+        ProviderStatusLine(
+            iconName: statusIconName,
+            statusColor: statusColor,
+            title: providerStatusTitle,
+            detail: providerStatusDetailText,
+            client: providerClient,
+            terminateClient: providerClient == nil ? nil : terminateProviderClient
+        )
     }
 
     private var statusColor: Color {
@@ -198,6 +159,65 @@ struct MockMenuContent: View {
         }
     }
 
+    private var statusIconName: String {
+        switch currentMode {
+            case .off:
+                "power"
+            case .mock:
+                "antenna.radiowaves.left.and.right.circle"
+            case .passthrough:
+                forwarder.trafficActive ? "bolt.horizontal.circle.fill" : "antenna.radiowaves.left.and.right.circle"
+        }
+    }
+
+    private var providerStatusTitle: String {
+        switch currentMode {
+            case .off:
+                "Off"
+            case .mock:
+                statusText
+            case .passthrough:
+                forwarderStatusText
+        }
+    }
+
+    private var providerStatusDetailText: String {
+        switch currentMode {
+            case .off:
+                return "No provider running"
+            case .mock:
+                guard !server.lastActivity.isEmpty else { return deviceSummary }
+                return "\(deviceSummary) · \(server.lastActivity)"
+            case .passthrough:
+                if !forwarder.lastActivity.isEmpty {
+                    return forwarder.lastActivity
+                }
+                return passthroughDetailText
+        }
+    }
+
+    private var providerClient: SocketClientInfo? {
+        switch currentMode {
+            case .off:
+                nil
+            case .mock:
+                server.connectedClient
+            case .passthrough:
+                forwarder.connectedClient
+        }
+    }
+
+    private func terminateProviderClient() {
+        switch currentMode {
+            case .off:
+                break
+            case .mock:
+                server.terminateConnectedClient()
+            case .passthrough:
+                forwarder.terminateConnectedClient()
+        }
+    }
+
     private var forwarderStatusColor: Color {
         switch forwarder.status {
             case .unknown:          .secondary
@@ -220,8 +240,8 @@ struct MockMenuContent: View {
         }
     }
 
-    private var passthroughSummaryText: String {
-        guard forwarder.isRunning else { return forwarderStatusText }
+    private var passthroughDetailText: String {
+        guard forwarder.isRunning else { return "No passthrough provider running" }
         let devices = forwarder.passthroughDevices
         let activeCount = devices.filter(\.isActive).count
         if activeCount > 0 {
@@ -232,7 +252,7 @@ struct MockMenuContent: View {
             let deviceWord = devices.count == 1 ? "device" : "devices"
             return "\(devices.count) communicating \(deviceWord)"
         }
-        return forwarderStatusText
+        return "No device traffic yet"
     }
 
     // MARK: - Configuration Bar
@@ -502,23 +522,14 @@ struct MockMenuContent: View {
 
     private var passthroughBody: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: forwarder.trafficActive ? "bolt.horizontal.circle.fill" : "antenna.radiowaves.left.and.right.circle")
-                    .font(.title3)
-                    .foregroundStyle(forwarder.trafficActive ? .green : forwarderStatusColor)
-                    .frame(width: Self.statusIconColumnWidth, alignment: .center)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Passthrough")
-                        .font(.subheadline.weight(.semibold))
-                    Text(forwarder.lastActivity.isEmpty ? forwarderStatusText : forwarder.lastActivity)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer()
-            }
+            ProviderStatusLine(
+                iconName: statusIconName,
+                statusColor: statusColor,
+                title: forwarderStatusText,
+                detail: forwarder.lastActivity.isEmpty ? passthroughDetailText : forwarder.lastActivity,
+                client: forwarder.connectedClient,
+                terminateClient: forwarder.connectedClient == nil ? nil : forwarder.terminateConnectedClient
+            )
             .padding(12)
 
             Divider()
@@ -641,6 +652,67 @@ struct MockMenuContent: View {
     }
 }
 
+private struct ProviderStatusLine: View {
+    let iconName: String
+    let statusColor: Color
+    let title: String
+    let detail: String
+    let client: SocketClientInfo?
+    let terminateClient: (() -> Void)?
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 6, height: 6)
+                    .offset(x: 7, y: -7)
+                Image(systemName: iconName)
+                    .font(.caption)
+                    .foregroundStyle(statusColor)
+            }
+            .frame(width: MockMenuContent.statusIconColumnWidth, alignment: .center)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                    Text(clientText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            if let terminateClient, client != nil {
+                Button {
+                    terminateClient()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Terminate connected client")
+                .accessibilityLabel("Terminate connected client")
+            }
+        }
+        .frame(minHeight: 26)
+    }
+
+    private var clientText: String {
+        guard let client else { return "No client" }
+        return "Client \(client.displayText)"
+    }
+}
+
 // MARK: - Passthrough Activity Row
 
 struct PassthroughActivityRow: View {
@@ -667,7 +739,9 @@ struct PassthroughActivityRow: View {
                         Text(activity.lastDetail)
                     }
                     Text("·")
-                    Text(ageText)
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        Text(ageText(now: context.date))
+                    }
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -693,8 +767,8 @@ struct PassthroughActivityRow: View {
         .help(activity.id)
     }
 
-    private var ageText: String {
-        let age = max(0, Date().timeIntervalSince(activity.lastAt))
+    private func ageText(now: Date) -> String {
+        let age = max(0, now.timeIntervalSince(activity.lastAt))
         if age < 2 {
             return "now"
         }

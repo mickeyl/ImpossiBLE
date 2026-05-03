@@ -5,6 +5,7 @@
 #import <sys/un.h>
 #import <signal.h>
 #import <unistd.h>
+#import <libproc.h>
 
 static const char *kCBSSocketPath = "/tmp/impossible.sock";
 static const char *kCBSActivityPath = "/tmp/impossible-passthrough-activity.json";
@@ -31,9 +32,32 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
 @property(nonatomic, assign) BOOL scanShouldDeduplicate;
 @property(nonatomic, assign) int clientFd;
 @property(nonatomic, assign) uint64_t clientGeneration;
+@property(nonatomic, assign) pid_t clientPid;
+@property(nonatomic, copy) NSString *clientProcessName;
 @end
 
 @implementation CBSHelper
+
+static pid_t CBSPeerPIDForFd(int fd) {
+    pid_t pid = 0;
+    socklen_t len = sizeof(pid);
+    if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &len) != 0) {
+        return 0;
+    }
+    return pid;
+}
+
+static NSString *CBSProcessNameForPID(pid_t pid) {
+    if (pid <= 0) {
+        return @"unknown";
+    }
+    char name[PROC_PIDPATHINFO_MAXSIZE] = {0};
+    int result = proc_name(pid, name, sizeof(name));
+    if (result <= 0 || name[0] == '\0') {
+        return @"unknown";
+    }
+    return [NSString stringWithUTF8String:name] ?: @"unknown";
+}
 
 - (instancetype)init {
     self = [super init];
@@ -53,6 +77,7 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
         _seenScanPeripherals = [NSMutableSet set];
         _scanShouldDeduplicate = YES;
         _clientFd = -1;
+        _clientPid = 0;
     }
     return self;
 }
@@ -130,11 +155,19 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
             }
             dispatch_async(self.ioQueue, ^{
                 if (self.clientFd >= 0) {
-                    NSLog(@"ImpossiBLE-Helper: rejecting additional client");
+                    NSLog(@"ImpossiBLE-Helper: rejecting additional client; active client pid=%d process=%@",
+                          self.clientPid,
+                          self.clientProcessName ?: @"unknown");
+                    [self sendConnectionRejectedToFd:client];
                     close(client);
                     return;
                 }
-                NSLog(@"ImpossiBLE-Helper: client connected");
+                pid_t pid = CBSPeerPIDForFd(client);
+                self.clientPid = pid;
+                self.clientProcessName = CBSProcessNameForPID(pid);
+                NSLog(@"ImpossiBLE-Helper: client connected pid=%d process=%@",
+                      self.clientPid,
+                      self.clientProcessName ?: @"unknown");
                 self.clientFd = client;
                 self.clientGeneration += 1;
                 [self resetActivitySnapshot];
@@ -194,6 +227,8 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
         return;
     }
     self.clientFd = -1;
+    self.clientPid = 0;
+    self.clientProcessName = nil;
     close(fd);
 
     NSArray<CBPeripheral *> *peripherals = [self.peripherals allValues];
@@ -369,6 +404,10 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
 
     NSDictionary *snapshot = @{
         @"updatedAt": @(CFAbsoluteTimeGetCurrent()),
+        @"client": self.clientPid > 0 ? @{
+            @"pid": @(self.clientPid),
+            @"processName": self.clientProcessName ?: @"unknown"
+        } : [NSNull null],
         @"devices": devices ?: @[]
     };
     NSError *error = nil;
@@ -827,6 +866,29 @@ static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
             return;
         }
     });
+}
+
+- (void)sendConnectionRejectedToFd:(int)fd {
+    NSString *message = [NSString stringWithFormat:@"another ImpossiBLE client is already connected (pid=%d, process=%@)",
+                         self.clientPid,
+                         self.clientProcessName ?: @"unknown"];
+    NSDictionary *msg = @{
+        @"type": @"connectionRejected",
+        @"code": @"clientBusy",
+        @"message": message,
+        @"activeClient": @{
+            @"pid": @(self.clientPid),
+            @"processName": self.clientProcessName ?: @"unknown"
+        },
+        @"retry": @NO
+    };
+    NSError *error = nil;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:msg options:0 error:&error];
+    if (!data) {
+        return;
+    }
+    [self writeAllToFd:fd bytes:data.bytes length:data.length];
+    [self writeAllToFd:fd bytes:"\n" length:1];
 }
 
 #pragma mark - Helpers

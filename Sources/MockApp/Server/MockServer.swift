@@ -2,6 +2,26 @@ import Foundation
 
 private let kSocketPath = "/tmp/impossible.sock"
 
+struct SocketClientInfo: Equatable {
+    let pid: pid_t
+    let processName: String
+
+    var displayText: String {
+        "\(processName) (PID \(pid))"
+    }
+
+    var messageSuffix: String {
+        "pid=\(pid), process=\(processName)"
+    }
+
+    var wireValue: [String: Any] {
+        [
+            "pid": Int(pid),
+            "processName": processName,
+        ]
+    }
+}
+
 /// Socket server that implements the ImpossiBLE helper protocol with mock data.
 /// All socket I/O runs on `ioQueue`. UI-facing state is published on the main thread.
 final class MockServer: ObservableObject {
@@ -14,6 +34,7 @@ final class MockServer: ObservableObject {
     @Published var status: Status = .stopped
     @Published var lastActivity: String = ""
     @Published var trafficActive: Bool = false
+    @Published private(set) var connectedClient: SocketClientInfo?
     @Published var connectedDeviceIDs: Set<String> = []
     @Published var pairedDeviceIDs: Set<String> = []
 
@@ -22,6 +43,7 @@ final class MockServer: ObservableObject {
     // Guarded by ioQueue
     private var serverFd: Int32 = -1
     private var clientFd: Int32 = -1
+    private var clientInfo: SocketClientInfo?
     private var clientGeneration: UInt64 = 0
     private var acceptSource: DispatchSourceRead?
     private var readSource: DispatchSourceRead?
@@ -115,6 +137,8 @@ final class MockServer: ObservableObject {
                 close(clientFd)
                 clientFd = -1
             }
+            clientInfo = nil
+            publishConnectedClient(nil)
             clientGeneration &+= 1
 
             acceptSource?.cancel()
@@ -151,11 +175,15 @@ final class MockServer: ObservableObject {
         guard fd >= 0 else { return }
 
         if clientFd >= 0 {
+            sendConnectionRejected(to: fd)
             close(fd)
-            log("Rejected additional client")
+            let suffix = clientInfo?.messageSuffix ?? "pid=0, process=unknown"
+            log("Rejected additional client; active client \(suffix)")
             return
         }
         clientFd = fd
+        clientInfo = peerClientInfo(for: fd)
+        publishConnectedClient(clientInfo)
         clientGeneration &+= 1
         let generation = clientGeneration
         readBuffer.removeAll()
@@ -169,7 +197,8 @@ final class MockServer: ObservableObject {
         scanTimer = nil
 
         publishStatus(.clientConnected)
-        log("Client connected")
+        let suffix = clientInfo?.messageSuffix ?? "pid=0, process=unknown"
+        log("Client connected \(suffix)")
 
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: ioQueue)
         source.setEventHandler { [weak self] in
@@ -191,6 +220,8 @@ final class MockServer: ObservableObject {
             readSource = nil
             close(fd)
             clientFd = -1
+            clientInfo = nil
+            publishConnectedClient(nil)
             scanTimer?.cancel()
             scanTimer = nil
             scanActive = false
@@ -222,13 +253,60 @@ final class MockServer: ObservableObject {
         var payload = data
         payload.append(UInt8(ascii: "\n"))
         let fd = clientFd
+        write(payload, to: fd)
+    }
+
+    private func sendConnectionRejected(to fd: Int32) {
+        let info = clientInfo
+        let suffix = info?.messageSuffix ?? "pid=0, process=unknown"
+        let msg: [String: Any] = [
+            "type": "connectionRejected",
+            "code": "clientBusy",
+            "message": "another ImpossiBLE client is already connected (\(suffix))",
+            "activeClient": info?.wireValue ?? [
+                "pid": 0,
+                "processName": "unknown",
+            ],
+            "retry": false,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: msg) else { return }
+        var payload = data
+        payload.append(UInt8(ascii: "\n"))
+        write(payload, to: fd)
+    }
+
+    private func write(_ payload: Data, to fd: Int32) {
         payload.withUnsafeBytes { ptr in
             guard let base = ptr.baseAddress else { return }
             var written = 0
             while written < payload.count {
-                let n = write(fd, base.advanced(by: written), payload.count - written)
+                let n = Darwin.write(fd, base.advanced(by: written), payload.count - written)
                 if n <= 0 { break }
                 written += n
+            }
+        }
+    }
+
+    private func peerClientInfo(for fd: Int32) -> SocketClientInfo? {
+        var pid = pid_t(0)
+        var len = socklen_t(MemoryLayout<pid_t>.size)
+        guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &len) == 0, pid > 0 else {
+            return nil
+        }
+
+        var nameBuffer = [CChar](repeating: 0, count: 4096)
+        let result = proc_name(pid, &nameBuffer, UInt32(nameBuffer.count))
+        let processName = result > 0 ? String(cString: nameBuffer) : "unknown"
+        return SocketClientInfo(pid: pid, processName: processName)
+    }
+
+    func terminateConnectedClient() {
+        ioQueue.async { [self] in
+            guard let pid = clientInfo?.pid, pid > 0 else { return }
+            if Darwin.kill(pid, SIGTERM) == 0 {
+                log("Terminating client pid=\(pid)")
+            } else {
+                log("Failed to terminate client pid=\(pid): errno \(errno)")
             }
         }
     }
@@ -711,6 +789,12 @@ final class MockServer: ObservableObject {
     private func publishStatus(_ newStatus: Status) {
         DispatchQueue.main.async { [weak self] in
             self?.status = newStatus
+        }
+    }
+
+    private func publishConnectedClient(_ client: SocketClientInfo?) {
+        DispatchQueue.main.async { [weak self] in
+            self?.connectedClient = client
         }
     }
 

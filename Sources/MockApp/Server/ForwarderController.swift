@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 private let passthroughActivityPath = "/tmp/impossible-passthrough-activity.json"
@@ -21,6 +22,11 @@ struct PassthroughDeviceActivity: Identifiable, Equatable {
 }
 
 private struct PassthroughActivitySnapshot: Decodable {
+    struct Client: Decodable {
+        let pid: Int32
+        let processName: String
+    }
+
     struct Device: Decodable {
         let id: String
         let name: String?
@@ -31,6 +37,7 @@ private struct PassthroughActivitySnapshot: Decodable {
         let count: Int?
     }
 
+    let client: Client?
     let devices: [Device]
 }
 
@@ -48,6 +55,7 @@ final class ForwarderController: ObservableObject {
     @Published private(set) var trafficActive = false
     @Published private(set) var lastActivity = ""
     @Published private(set) var activityUnavailableMessage: String?
+    @Published private(set) var connectedClient: SocketClientInfo?
 
     private let queue = DispatchQueue(label: "impossible.forwarder.control")
     private var pollTimer: Timer?
@@ -135,6 +143,17 @@ final class ForwarderController: ObservableObject {
         }
     }
 
+    func terminateConnectedClient() {
+        guard let pid = connectedClient?.pid, pid > 0 else { return }
+        queue.async { [weak self] in
+            if Darwin.kill(pid, SIGTERM) != 0 {
+                NSLog("ImpossiBLE-Mock: failed to terminate passthrough client pid=%d errno=%d", pid, errno)
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+            self?.refreshSync()
+        }
+    }
+
     private func perform(completion: (() -> Void)? = nil, _ work: @escaping () -> Void) {
         DispatchQueue.main.async {
             self.isBusy = true
@@ -193,6 +212,11 @@ final class ForwarderController: ObservableObject {
 
         passthroughDevices = devices
         trafficActive = devices.contains { $0.isActive }
+        if let client = snapshot.client, client.pid > 0 {
+            connectedClient = SocketClientInfo(pid: client.pid, processName: client.processName)
+        } else {
+            connectedClient = nil
+        }
         activityUnavailableMessage = nil
         if let latest = devices.first {
             let detail = latest.lastDetail.isEmpty ? "" : " \(latest.lastDetail)"
@@ -208,6 +232,7 @@ final class ForwarderController: ObservableObject {
         }
         trafficActive = false
         lastActivity = ""
+        connectedClient = nil
         activityUnavailableMessage = unavailableMessage
     }
 

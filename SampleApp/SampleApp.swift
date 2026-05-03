@@ -35,6 +35,8 @@ final class BLEManager: NSObject, ObservableObject {
     private var peripheralMap: [UUID: CBPeripheral] = [:]
     private var secondaryPeripheralMap: [UUID: CBPeripheral] = [:]
     private var l2capChannel: CBL2CAPChannel?
+    private var pendingConnectionID: UUID?
+    private var manuallyDisconnectedPeripheralID: UUID?
 
     struct DiscoveredPeripheral: Identifiable {
         let id: UUID
@@ -94,18 +96,46 @@ final class BLEManager: NSObject, ObservableObject {
         appendLog("Scanning stopped")
     }
 
-    func connect(_ peripheral: CBPeripheral) {
+    func connect(_ peripheral: CBPeripheral, automatic: Bool = false) {
+        if connectedPeripheral?.identifier == peripheral.identifier {
+            return
+        }
+        if pendingConnectionID == peripheral.identifier {
+            return
+        }
+        if !automatic {
+            manuallyDisconnectedPeripheralID = nil
+        }
         stopScan()
         peripheral.delegate = self
+        pendingConnectionID = peripheral.identifier
         central.connect(peripheral)
         appendLog("Connecting to \(peripheral.name ?? peripheral.identifier.uuidString)\u{2026}")
     }
 
     func disconnect() {
         guard let p = connectedPeripheral else { return }
+        manuallyDisconnectedPeripheralID = p.identifier
         closeL2CAPChannel()
         central.cancelPeripheralConnection(p)
         appendLog("Disconnecting\u{2026}")
+    }
+
+    func reconnectFromDetailIfNeeded(_ peripheral: CBPeripheral) {
+        guard state == .poweredOn else { return }
+        guard connectedPeripheral?.identifier != peripheral.identifier else { return }
+        guard pendingConnectionID != peripheral.identifier else { return }
+        guard manuallyDisconnectedPeripheralID != peripheral.identifier else { return }
+
+        appendLog("Detail is still open; reconnecting to \(peripheral.name ?? peripheral.identifier.uuidString)\u{2026}")
+        connect(peripheral, automatic: true)
+    }
+
+    func peripheral(with id: UUID) -> CBPeripheral? {
+        if connectedPeripheral?.identifier == id {
+            return connectedPeripheral
+        }
+        return peripheralMap[id] ?? secondaryPeripheralMap[id]
     }
 
     func discoverServices() {
@@ -356,6 +386,8 @@ extension BLEManager: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        pendingConnectionID = nil
+        manuallyDisconnectedPeripheralID = nil
         connectedPeripheral = peripheral
         services = []
         characteristicValues = [:]
@@ -365,10 +397,16 @@ extension BLEManager: CBCentralManagerDelegate {
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        if pendingConnectionID == peripheral.identifier {
+            pendingConnectionID = nil
+        }
         appendLog("Failed to connect: \(error?.localizedDescription ?? "unknown")")
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        if pendingConnectionID == peripheral.identifier {
+            pendingConnectionID = nil
+        }
         if connectedPeripheral?.identifier == peripheral.identifier {
             connectedPeripheral = nil
             services = []
@@ -560,93 +598,43 @@ extension CBManagerState {
 // MARK: - Scan View
 
 struct ScanView: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @StateObject private var ble = BLEManager()
     @State private var path = NavigationPath()
+    @State private var selectedPeripheralID: UUID?
     @State private var isLogPresented = false
     @State private var scanFilter = ""
     @State private var retrieveConnectedFilter = "180D 180F 180A"
     @State private var allowDuplicates = false
 
     var body: some View {
+        Group {
+            if horizontalSizeClass == .regular {
+                iPadBody
+            } else {
+                iPhoneBody
+            }
+        }
+        .fullScreenCover(isPresented: $isLogPresented) {
+            LogSheetView(ble: ble)
+        }
+    }
+
+    private var iPhoneBody: some View {
         NavigationStack(path: $path) {
             List {
-                Section {
-                    HStack {
-                        Circle()
-                            .fill(ble.state == .poweredOn ? .green : .red)
-                            .frame(width: 8, height: 8)
-                        Text("Bluetooth: \(ble.state.name)")
-                        Spacer()
-                        if ble.isScanning {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                    }
-                }
-
-                Section("Scan") {
-                    TextField("Service filter, e.g. 180D 180F", text: $scanFilter)
-                        .font(.system(.body, design: .monospaced))
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                    Toggle("Allow duplicate advertisements", isOn: $allowDuplicates)
-                    HStack {
-                        Button(ble.isScanning ? "Stop Primary" : "Start Primary") {
-                            if ble.isScanning {
-                                ble.stopScan()
-                            } else {
-                                ble.startScan(serviceUUIDs: cbUUIDs(from: scanFilter), allowDuplicates: allowDuplicates)
-                            }
-                        }
-                        .disabled(ble.state != .poweredOn)
-
-                        Button(ble.secondaryIsScanning ? "Stop Secondary" : "Start Secondary") {
-                            if ble.secondaryIsScanning {
-                                ble.stopSecondaryScan()
-                            } else {
-                                ble.startSecondaryScan(serviceUUIDs: cbUUIDs(from: scanFilter))
-                            }
-                        }
-                        .disabled(ble.secondaryState != .poweredOn && ble.secondaryIsScanning)
-                    }
-                    Text("Secondary central: \(ble.secondaryState.name), \(ble.secondaryDiscovered.count) discovered")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Central APIs") {
-                    Button("Register for Connection Events") {
-                        ble.registerForConnectionEvents()
-                    }
-                    .disabled(ble.state != .poweredOn)
-
-                    Button("Retrieve Discovered Peripherals") {
-                        ble.retrieveDiscoveredPeripherals()
-                    }
-                    .disabled(ble.discovered.isEmpty)
-
-                    TextField("Connected service UUIDs", text: $retrieveConnectedFilter)
-                        .font(.system(.body, design: .monospaced))
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-
-                    Button("Retrieve Connected Peripherals") {
-                        ble.retrieveConnectedPeripherals(services: cbUUIDs(from: retrieveConnectedFilter) ?? [])
-                    }
-                    .disabled(ble.state != .poweredOn || (cbUUIDs(from: retrieveConnectedFilter) ?? []).isEmpty)
-
-                    if !ble.retrievedPeripherals.isEmpty || !ble.retrievedConnectedPeripherals.isEmpty {
-                        RetrievedPeripheralsView(
-                            retrieved: ble.retrievedPeripherals,
-                            connected: ble.retrievedConnectedPeripherals
-                        )
-                    }
-                }
+                statusSection
+                scanSection
+                centralAPISection
 
                 if let connected = ble.connectedPeripheral {
                     Section("Connected") {
                         NavigationLink {
-                            PeripheralDetailView(ble: ble, isLogPresented: $isLogPresented)
+                            PeripheralDetailView(
+                                ble: ble,
+                                peripheral: connected,
+                                isLogPresented: $isLogPresented
+                            )
                         } label: {
                             VStack(alignment: .leading) {
                                 Text(connected.name ?? connected.identifier.uuidString)
@@ -663,45 +651,7 @@ struct ScanView: View {
                 }
 
                 Section("Discovered (\(ble.discovered.count))") {
-                    if ble.discovered.isEmpty {
-                        VStack(spacing: 8) {
-                            Image(systemName: ble.isScanning ? "dot.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
-                                .font(.title2)
-                                .foregroundStyle(.secondary)
-                            Text(ble.isScanning ? "Scanning" : "No Peripherals")
-                                .font(.subheadline.weight(.medium))
-                            Text(ble.isScanning ? "Nearby peripherals will appear here." : "Start a scan after the mock server is listening.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                    } else {
-                        ForEach(sortedDiscoveredDevices) { device in
-                            Button {
-                                ble.connect(device.peripheral)
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading) {
-                                        Text(device.name)
-                                            .font(.subheadline.weight(.medium))
-                                        Text(device.id.uuidString)
-                                            .font(.caption2.monospaced())
-                                            .foregroundStyle(.secondary)
-                                        Text(advertisementSummary(device.advertisementData))
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Text("\(device.rssi) dBm")
-                                        .font(.caption.monospaced())
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .tint(.primary)
-                        }
-                    }
+                    discoveredListContent
                 }
             }
             .navigationTitle("ImpossiBLE Sample")
@@ -721,9 +671,205 @@ struct ScanView: View {
                 }
             }
         }
-        .fullScreenCover(isPresented: $isLogPresented) {
-            LogSheetView(ble: ble)
+    }
+
+    private var iPadBody: some View {
+        NavigationSplitView {
+            List {
+                statusSection
+                scanSection
+                centralAPISection
+                iPadConnectedSection
+
+                Section("Discovered (\(ble.discovered.count))") {
+                    discoveredListContent
+                }
+            }
+            .navigationTitle("ImpossiBLE")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(ble.isScanning ? "Stop" : "Scan") {
+                        ble.isScanning ? ble.stopScan() : ble.startScan(serviceUUIDs: cbUUIDs(from: scanFilter), allowDuplicates: allowDuplicates)
+                    }
+                    .disabled(ble.state != .poweredOn)
+                }
+            }
+        } content: {
+            NavigationStack {
+                if let peripheral = detailPeripheral {
+                    PeripheralDetailView(
+                        ble: ble,
+                        peripheral: peripheral,
+                        isLogPresented: $isLogPresented
+                    )
+                } else {
+                    iPadEmptyDetail
+                }
+            }
+        } detail: {
+            NavigationStack {
+                LogPanelView(ble: ble)
+                    .navigationTitle("Log")
+                    .navigationBarTitleDisplayMode(.inline)
+            }
         }
+        .navigationSplitViewStyle(.balanced)
+        .onChange(of: ble.state) { _, newState in
+            if newState != .poweredOn {
+                path = NavigationPath()
+                selectedPeripheralID = nil
+            }
+        }
+    }
+
+    private var statusSection: some View {
+        Section {
+            HStack {
+                Circle()
+                    .fill(ble.state == .poweredOn ? .green : .red)
+                    .frame(width: 8, height: 8)
+                Text("Bluetooth: \(ble.state.name)")
+                Spacer()
+                if ble.isScanning {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    private var scanSection: some View {
+        Section("Scan") {
+            TextField("Service filter, e.g. 180D 180F", text: $scanFilter)
+                .font(.system(.body, design: .monospaced))
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+            Toggle("Allow duplicate advertisements", isOn: $allowDuplicates)
+            HStack {
+                Button(ble.isScanning ? "Stop Primary" : "Start Primary") {
+                    if ble.isScanning {
+                        ble.stopScan()
+                    } else {
+                        ble.startScan(serviceUUIDs: cbUUIDs(from: scanFilter), allowDuplicates: allowDuplicates)
+                    }
+                }
+                .disabled(ble.state != .poweredOn)
+
+                Button(ble.secondaryIsScanning ? "Stop Secondary" : "Start Secondary") {
+                    if ble.secondaryIsScanning {
+                        ble.stopSecondaryScan()
+                    } else {
+                        ble.startSecondaryScan(serviceUUIDs: cbUUIDs(from: scanFilter))
+                    }
+                }
+                .disabled(ble.secondaryState != .poweredOn && ble.secondaryIsScanning)
+            }
+            Text("Secondary central: \(ble.secondaryState.name), \(ble.secondaryDiscovered.count) discovered")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var centralAPISection: some View {
+        Section("Central APIs") {
+            Button("Register for Connection Events") {
+                ble.registerForConnectionEvents()
+            }
+            .disabled(ble.state != .poweredOn)
+
+            Button("Retrieve Discovered Peripherals") {
+                ble.retrieveDiscoveredPeripherals()
+            }
+            .disabled(ble.discovered.isEmpty)
+
+            TextField("Connected service UUIDs", text: $retrieveConnectedFilter)
+                .font(.system(.body, design: .monospaced))
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+
+            Button("Retrieve Connected Peripherals") {
+                ble.retrieveConnectedPeripherals(services: cbUUIDs(from: retrieveConnectedFilter) ?? [])
+            }
+            .disabled(ble.state != .poweredOn || (cbUUIDs(from: retrieveConnectedFilter) ?? []).isEmpty)
+
+            if !ble.retrievedPeripherals.isEmpty || !ble.retrievedConnectedPeripherals.isEmpty {
+                RetrievedPeripheralsView(
+                    retrieved: ble.retrievedPeripherals,
+                    connected: ble.retrievedConnectedPeripherals
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var iPadConnectedSection: some View {
+        if let connected = ble.connectedPeripheral {
+            Section("Connected") {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(connected.name ?? connected.identifier.uuidString)
+                        .font(.subheadline.weight(.semibold))
+                    Text(connected.identifier.uuidString)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+                Button("Disconnect", role: .destructive) {
+                    ble.disconnect()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var discoveredListContent: some View {
+        if ble.discovered.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: ble.isScanning ? "dot.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+                Text(ble.isScanning ? "Scanning" : "No Peripherals")
+                    .font(.subheadline.weight(.medium))
+                Text(ble.isScanning ? "Nearby peripherals will appear here." : "Start a scan after the mock server is listening.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+        } else {
+            ForEach(sortedDiscoveredDevices) { device in
+                Button {
+                    selectedPeripheralID = device.id
+                    ble.connect(device.peripheral)
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(device.name)
+                                .font(.subheadline.weight(.medium))
+                            Text(device.id.uuidString)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                            Text(advertisementSummary(device.advertisementData))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text("\(device.rssi) dBm")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .tint(.primary)
+            }
+        }
+    }
+
+    private var iPadEmptyDetail: some View {
+        ContentUnavailableView(
+            "No Peripheral Selected",
+            systemImage: "antenna.radiowaves.left.and.right",
+            description: Text("Select a discovered peripheral from the sidebar to inspect services, characteristics, descriptors, and L2CAP.")
+        )
+        .navigationTitle("Peripheral")
     }
 
     private var sortedDiscoveredDevices: [BLEManager.DiscoveredPeripheral] {
@@ -743,12 +889,20 @@ struct ScanView: View {
             return lhs.id.uuidString < rhs.id.uuidString
         }
     }
+
+    private var detailPeripheral: CBPeripheral? {
+        if let selectedPeripheralID, let peripheral = ble.peripheral(with: selectedPeripheralID) {
+            return peripheral
+        }
+        return ble.connectedPeripheral
+    }
 }
 
 // MARK: - Peripheral Detail
 
 struct PeripheralDetailView: View {
     @ObservedObject var ble: BLEManager
+    let peripheral: CBPeripheral
     @Binding var isLogPresented: Bool
     @State private var serviceFilter = ""
     @State private var characteristicFilter = ""
@@ -848,10 +1002,19 @@ struct PeripheralDetailView: View {
                 }
             }
         }
-        .navigationTitle(ble.connectedPeripheral?.name ?? "Peripheral")
+        .navigationTitle(peripheral.name ?? "Peripheral")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             LogToolbarItem(isLogPresented: $isLogPresented)
+        }
+        .onAppear {
+            ble.reconnectFromDetailIfNeeded(peripheral)
+        }
+        .onChange(of: ble.connectedPeripheral?.identifier) { _, _ in
+            ble.reconnectFromDetailIfNeeded(peripheral)
+        }
+        .onChange(of: ble.state) { _, _ in
+            ble.reconnectFromDetailIfNeeded(peripheral)
         }
     }
 
@@ -1084,25 +1247,41 @@ struct DescriptorDetailView: View {
 
 // MARK: - Log Sheet
 
+struct LogPanelView: View {
+    @ObservedObject var ble: BLEManager
+
+    var body: some View {
+        List {
+            if ble.log.isEmpty {
+                ContentUnavailableView(
+                    "No Log Entries",
+                    systemImage: "doc.text",
+                    description: Text("Bluetooth events will appear here.")
+                )
+            } else {
+                ForEach(ble.log) { entry in
+                    LogEntryRow(entry: entry)
+                }
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Clear") {
+                    ble.clearLog()
+                }
+                .disabled(ble.log.isEmpty)
+            }
+        }
+    }
+}
+
 struct LogSheetView: View {
     @ObservedObject var ble: BLEManager
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            List {
-                if ble.log.isEmpty {
-                    ContentUnavailableView(
-                        "No Log Entries",
-                        systemImage: "doc.text",
-                        description: Text("Bluetooth events will appear here.")
-                    )
-                } else {
-                    ForEach(ble.log) { entry in
-                        LogEntryRow(entry: entry)
-                    }
-                }
-            }
+            LogPanelView(ble: ble)
             .navigationTitle("Log")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1110,12 +1289,6 @@ struct LogSheetView: View {
                     Button("Done") {
                         dismiss()
                     }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button("Clear") {
-                        ble.clearLog()
-                    }
-                    .disabled(ble.log.isEmpty)
                 }
             }
         }

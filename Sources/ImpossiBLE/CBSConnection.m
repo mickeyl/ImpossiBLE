@@ -12,8 +12,11 @@ static dispatch_queue_t gWriteQueue;
 static CBSMessageHandler gMessageHandler;
 static CBSStateHandler gStateHandler;
 static BOOL gConnected = NO;
+static BOOL gReconnectDisabled = NO;
+static NSString *gPendingDisconnectReason;
 static dispatch_source_t gReconnectTimer;
 
+static void cbs_cancel_reconnect_timer(void);
 static void cbs_schedule_reconnect(void);
 static void cbs_handle_disconnect(int fd);
 static void cbs_start_reader(int fd);
@@ -29,21 +32,33 @@ static int cbs_find_newline(NSData *data) {
 }
 
 static void cbs_handle_line(NSData *line) {
-    if (line.length == 0 || !gMessageHandler) {
+    if (line.length == 0) {
         return;
     }
     NSError *error = nil;
     id obj = [NSJSONSerialization JSONObjectWithData:line options:0 error:&error];
     if ([obj isKindOfClass:[NSDictionary class]]) {
-        NSLog(@"ImpossiBLE: recv type=%@", obj[@"type"]);
-        gMessageHandler((NSDictionary *)obj);
+        NSDictionary *msg = (NSDictionary *)obj;
+        NSLog(@"ImpossiBLE: recv type=%@", msg[@"type"]);
+        if ([msg[@"type"] isEqualToString:@"connectionRejected"] &&
+            [msg[@"code"] isEqualToString:@"clientBusy"]) {
+            gReconnectDisabled = YES;
+            gPendingDisconnectReason = msg[@"message"] ?: @"provider rejected this process as an additional client";
+            cbs_cancel_reconnect_timer();
+            NSLog(@"ImpossiBLE: second client rejected — %@; auto-reconnect disabled", gPendingDisconnectReason);
+        }
+        if (gMessageHandler) {
+            gMessageHandler(msg);
+        }
     }
 }
 
 static void cbs_set_connected(BOOL connected) {
     if (gConnected == connected) return;
     gConnected = connected;
-    NSLog(@"ImpossiBLE: socket %s", connected ? "connected" : "disconnected");
+    if (connected) {
+        NSLog(@"ImpossiBLE: socket connected");
+    }
     CBSStateHandler handler = gStateHandler;
     if (handler) {
         handler(connected);
@@ -116,6 +131,10 @@ static int cbs_try_connect(void) {
 }
 
 static int cbs_connect(void) {
+    if (gReconnectDisabled) {
+        NSLog(@"ImpossiBLE: connect suppressed — previous connection was rejected as an additional client");
+        return -1;
+    }
     if (gSockFd >= 0) {
         return gSockFd;
     }
@@ -143,12 +162,28 @@ static void cbs_handle_disconnect(int fd) {
         close(gSockFd);
         gSockFd = -1;
         gReadQueue = nil;
+        NSString *reason = gPendingDisconnectReason;
+        gPendingDisconnectReason = nil;
+        if (reason.length > 0) {
+            NSLog(@"ImpossiBLE: socket disconnected (%@)", reason);
+        } else {
+            NSLog(@"ImpossiBLE: socket disconnected (provider closed connection)");
+        }
         cbs_set_connected(NO);
-        cbs_schedule_reconnect();
+        if (!gReconnectDisabled) {
+            cbs_schedule_reconnect();
+        }
     });
 }
 
+static void cbs_cancel_reconnect_timer(void) {
+    if (!gReconnectTimer) return;
+    dispatch_source_cancel(gReconnectTimer);
+    gReconnectTimer = nil;
+}
+
 static void cbs_schedule_reconnect(void) {
+    if (gReconnectDisabled) return;
     if (gReconnectTimer) return;
     if (!gWriteQueue) {
         gWriteQueue = dispatch_queue_create("impossible.writer", DISPATCH_QUEUE_SERIAL);
@@ -156,15 +191,17 @@ static void cbs_schedule_reconnect(void) {
     gReconnectTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, gWriteQueue);
     dispatch_source_set_timer(gReconnectTimer, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), 2 * NSEC_PER_SEC, NSEC_PER_SEC / 2);
     dispatch_source_set_event_handler(gReconnectTimer, ^{
+        if (gReconnectDisabled) {
+            cbs_cancel_reconnect_timer();
+            return;
+        }
         if (gSockFd >= 0) {
-            dispatch_source_cancel(gReconnectTimer);
-            gReconnectTimer = nil;
+            cbs_cancel_reconnect_timer();
             return;
         }
         int fd = cbs_try_connect();
         if (fd >= 0) {
-            dispatch_source_cancel(gReconnectTimer);
-            gReconnectTimer = nil;
+            cbs_cancel_reconnect_timer();
         }
     });
     dispatch_resume(gReconnectTimer);
@@ -187,6 +224,7 @@ void CBSConnectionOpen(void) {
         gWriteQueue = dispatch_queue_create("impossible.writer", DISPATCH_QUEUE_SERIAL);
     }
     dispatch_async(gWriteQueue, ^{
+        if (gReconnectDisabled) return;
         if (gSockFd >= 0) return;
         if (cbs_try_connect() < 0) {
             cbs_schedule_reconnect();
