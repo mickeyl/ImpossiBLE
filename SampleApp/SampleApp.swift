@@ -42,6 +42,26 @@ final class BLEManager: NSObject, ObservableObject {
         var name: String
         var rssi: Int
         var advertisementData: [String: Any]
+
+        var hasDisplayName: Bool {
+            if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name != "Unknown" {
+                return true
+            }
+            if let localName = advertisementData[CBAdvertisementDataLocalNameKey] as? String {
+                return !localName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            return false
+        }
+
+        var isConnectable: Bool {
+            if let connectable = advertisementData[CBAdvertisementDataIsConnectable] as? Bool {
+                return connectable
+            }
+            if let connectable = advertisementData[CBAdvertisementDataIsConnectable] as? NSNumber {
+                return connectable.boolValue
+            }
+            return false
+        }
     }
 
     struct LogEntry: Identifiable {
@@ -658,7 +678,7 @@ struct ScanView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 16)
                     } else {
-                        ForEach(discoveredBySignalStrength) { device in
+                        ForEach(sortedDiscoveredDevices) { device in
                             Button {
                                 ble.connect(device.peripheral)
                             } label: {
@@ -706,8 +726,14 @@ struct ScanView: View {
         }
     }
 
-    private var discoveredBySignalStrength: [BLEManager.DiscoveredPeripheral] {
+    private var sortedDiscoveredDevices: [BLEManager.DiscoveredPeripheral] {
         ble.discovered.sorted { lhs, rhs in
+            if lhs.hasDisplayName != rhs.hasDisplayName {
+                return lhs.hasDisplayName
+            }
+            if lhs.isConnectable != rhs.isConnectable {
+                return lhs.isConnectable
+            }
             if lhs.rssi != rhs.rssi {
                 return lhs.rssi > rhs.rssi
             }
