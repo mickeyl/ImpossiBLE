@@ -7,8 +7,10 @@ prefix ?= $(HOME)/.local
 INSTALL_DIR = $(prefix)/bin
 INSTALLED_APP = $(INSTALL_DIR)/impossible-helper.app
 HELPER_BIN_NAME = impossible-helper
-CODESIGN_MATCH ?= Apple Development
+CODESIGN_MATCH ?= Developer ID Application
 SIGN_IDENTITY := $(shell security find-identity -v -p codesigning | awk -F'"' '/$(CODESIGN_MATCH)/ {print $$2; exit}')
+HELPER_CODESIGN_FLAGS ?= --options runtime --timestamp
+HELPER_DIST_ZIP = impossible-helper.zip
 
 CFLAGS ?= -O2
 CFLAGS_COMMON = -fobjc-arc
@@ -31,7 +33,7 @@ NOTARY_PROFILE ?=
 
 .DEFAULT_GOAL := help
 
-.PHONY: help helper debug dev install uninstall clean run stop restart status log watch \
+.PHONY: help helper debug dev install uninstall clean run stop restart status log watch helper-assess helper-notarize \
         mock mock-debug mock-dev mock-relaunch mock-install mock-run mock-stop mock-assess mock-notarize mock-clean
 
 help:
@@ -47,6 +49,8 @@ help:
 	@echo "  status      Show whether the helper is running"
 	@echo "  log         Tail system log output from the helper"
 	@echo "  watch       Rebuild and restart on source changes (requires fswatch)"
+	@echo "  helper-assess Verify signing and Gatekeeper assessment"
+	@echo "  helper-notarize Notarize the helper app (requires NOTARY_PROFILE)"
 	@echo ""
 	@echo "Mock (virtual BLE devices):"
 	@echo "  mock        Build the mock menubar app (release)"
@@ -90,24 +94,29 @@ $(APP_BIN): $(HELPER_SRC) $(HELPER_PLIST) $(HELPER_ENTITLEMENTS)
 		-o $(APP_BIN) $(HELPER_SRC)
 	@if [ -z "$(SIGN_IDENTITY)" ]; then \
 		echo "WARNING: No codesigning identity matching '$(CODESIGN_MATCH)' found in your keychain."; \
-		echo "Proceeding unsigned. Install a certificate or set CODESIGN_MATCH to sign."; \
+		echo "Signing the helper ad hoc. Gatekeeper will reject quarantined or distributed copies."; \
+		codesign --force --sign - --entitlements $(HELPER_ENTITLEMENTS) $(APP_BUNDLE); \
 	else \
-		echo "Codesigning with: $(SIGN_IDENTITY)"; \
-		codesign --force --sign "$(SIGN_IDENTITY)" --entitlements $(HELPER_ENTITLEMENTS) $(APP_BUNDLE); \
+		echo "Codesigning helper with: $(SIGN_IDENTITY)"; \
+		codesign --force --sign "$(SIGN_IDENTITY)" $(HELPER_CODESIGN_FLAGS) --entitlements $(HELPER_ENTITLEMENTS) $(APP_BUNDLE); \
 	fi
+	@xattr -cr $(APP_BUNDLE) 2>/dev/null || true
 
 install: helper mock
 	mkdir -p $(INSTALL_DIR)
 	rm -rf $(INSTALLED_APP)
 	cp -R $(APP_BUNDLE) $(INSTALL_DIR)/
+	@xattr -cr $(INSTALLED_APP) 2>/dev/null || true
 	install -m 755 bin/impossible-helper $(INSTALL_DIR)/impossible-helper
 	rm -rf $(INSTALLED_MOCK_APP)
 	cp -R $(MOCK_BUNDLE) $(INSTALL_DIR)/
+	@xattr -cr $(INSTALLED_MOCK_APP) 2>/dev/null || true
 
 mock-install: mock
 	mkdir -p $(INSTALL_DIR)
 	rm -rf $(INSTALLED_MOCK_APP)
 	cp -R $(MOCK_BUNDLE) $(INSTALL_DIR)/
+	@xattr -cr $(INSTALLED_MOCK_APP) 2>/dev/null || true
 
 uninstall:
 	rm -rf $(INSTALLED_APP)
@@ -148,6 +157,24 @@ status:
 log:
 	@echo "Tailing logs for ImpossiBLE-Helper… (^C to stop)"
 	@log stream --predicate 'process == "impossible-helper"' --style compact
+
+helper-assess: helper
+	codesign --verify --deep --strict --verbose=4 $(APP_BUNDLE)
+	spctl -a -vvv -t exec $(APP_BUNDLE)
+
+helper-notarize:
+	@if [ -z "$(NOTARY_PROFILE)" ]; then \
+		echo "ERROR: Set NOTARY_PROFILE to a notarytool keychain profile."; \
+		echo "Example: xcrun notarytool store-credentials impossible-notary"; \
+		exit 1; \
+	fi
+	rm -rf $(APP_BUNDLE)
+	$(MAKE) helper
+	rm -f $(HELPER_DIST_ZIP)
+	ditto -c -k --keepParent --sequesterRsrc --zlibCompressionLevel 9 $(APP_BUNDLE) $(HELPER_DIST_ZIP)
+	xcrun notarytool submit $(HELPER_DIST_ZIP) --keychain-profile "$(NOTARY_PROFILE)" --wait
+	xcrun stapler staple $(APP_BUNDLE)
+	$(MAKE) helper-assess
 
 watch: install
 	@if ! pgrep -f $(HELPER_BIN_NAME) > /dev/null 2>&1; then \
@@ -260,4 +287,4 @@ mock-clean:
 # ---- General ----
 
 clean:
-	rm -rf $(APP_BUNDLE) $(MOCK_BUNDLE) $(MOCK_DIST_ZIP)
+	rm -rf $(APP_BUNDLE) $(HELPER_DIST_ZIP) $(MOCK_BUNDLE) $(MOCK_DIST_ZIP)
