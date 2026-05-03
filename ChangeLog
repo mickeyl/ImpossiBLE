@@ -1,6 +1,28 @@
 ImpossiBLE ChangeLog
 ====================
 
+2.1.1 (2026-05-03)
+------------------
+
+Mock app signing, status panel cleanup, and client termination safety.
+
+* Default the helper signing identity to `Developer ID Application` to
+  match the mock app, fall back to ad-hoc when no Developer ID cert is
+  present (instead of leaving the bundle unsigned), and add hardened
+  runtime + timestamp flags. Strip extended attributes after every build
+  and install. Fixes spurious Gatekeeper "contains malware" rejections
+  caused by helper bundles signed with an Apple Development cert.
+* Add `helper-assess` and `helper-notarize` Makefile targets symmetric
+  to the mock app's, so a notarized helper is one make invocation away
+  once a Developer ID cert is available.
+* Remove a duplicated provider status row in the Passthrough panel; the
+  panel header already shows the same row. Reuse the mock-mode pattern
+  of `<summary> · <last activity>` so the device summary remains visible
+  when traffic streams in.
+* Require a confirmation dialog before terminating the connected client
+  via the status row's close button, in both Mock and Passthrough modes.
+* Bump the mock app bundle version to 2.1.1.
+
 2.0.0 (2026-04-29)
 ------------------
 

@@ -250,7 +250,7 @@ enum StockConfigurations {
                         MockCharacteristic(
                             uuid: "2A28",
                             properties: 0x02,
-                            value: "2.1.0".data(using: .utf8)
+                            value: "2.1.1".data(using: .utf8)
                         ),
                     ]),
                 ]

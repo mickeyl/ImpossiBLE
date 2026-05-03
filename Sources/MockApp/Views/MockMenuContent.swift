@@ -189,10 +189,9 @@ struct MockMenuContent: View {
                 guard !server.lastActivity.isEmpty else { return deviceSummary }
                 return "\(deviceSummary) · \(server.lastActivity)"
             case .passthrough:
-                if !forwarder.lastActivity.isEmpty {
-                    return forwarder.lastActivity
-                }
-                return passthroughDetailText
+                let summary = passthroughDetailText
+                guard !forwarder.lastActivity.isEmpty else { return summary }
+                return "\(summary) · \(forwarder.lastActivity)"
         }
     }
 
@@ -521,41 +520,19 @@ struct MockMenuContent: View {
     // MARK: - Passthrough Body
 
     private var passthroughBody: some View {
-        VStack(spacing: 0) {
-            ProviderStatusLine(
-                iconName: statusIconName,
-                statusColor: statusColor,
-                title: forwarderStatusText,
-                detail: forwarder.lastActivity.isEmpty ? passthroughDetailText : forwarder.lastActivity,
-                client: forwarder.connectedClient,
-                terminateClient: forwarder.connectedClient == nil ? nil : forwarder.terminateConnectedClient
-            )
-            .padding(12)
-
-            Divider()
-
+        Group {
             if let message = forwarder.activityUnavailableMessage {
-                VStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.largeTitle)
-                        .foregroundStyle(.orange.opacity(0.75))
-                    Text(message)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                passthroughPlaceholder(
+                    systemImage: "exclamationmark.triangle",
+                    tint: .orange.opacity(0.75),
+                    message: message
+                )
             } else if forwarder.passthroughDevices.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "antenna.radiowaves.left.and.right.slash")
-                        .font(.largeTitle)
-                        .foregroundStyle(.secondary.opacity(0.35))
-                    Text("No device traffic yet")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                passthroughPlaceholder(
+                    systemImage: "antenna.radiowaves.left.and.right.slash",
+                    tint: .secondary.opacity(0.35),
+                    message: "No device traffic yet"
+                )
             } else {
                 ScrollView {
                     LazyVStack(spacing: 1) {
@@ -565,8 +542,21 @@ struct MockMenuContent: View {
                     }
                     .padding(.vertical, 4)
                 }
-                .frame(maxHeight: .infinity)
             }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func passthroughPlaceholder(systemImage: String, tint: Color, message: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.largeTitle)
+                .foregroundStyle(tint)
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -660,6 +650,8 @@ private struct ProviderStatusLine: View {
     let client: SocketClientInfo?
     let terminateClient: (() -> Void)?
 
+    @State private var confirmTermination = false
+
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             ZStack {
@@ -691,9 +683,9 @@ private struct ProviderStatusLine: View {
                     .lineLimit(1)
             }
 
-            if let terminateClient, client != nil {
+            if let terminateClient, let client {
                 Button {
-                    terminateClient()
+                    confirmTermination = true
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.caption)
@@ -702,6 +694,18 @@ private struct ProviderStatusLine: View {
                 .foregroundStyle(.secondary)
                 .help("Terminate connected client")
                 .accessibilityLabel("Terminate connected client")
+                .confirmationDialog(
+                    "Terminate \(client.displayText)?",
+                    isPresented: $confirmTermination,
+                    titleVisibility: .visible
+                ) {
+                    Button("Terminate", role: .destructive) {
+                        terminateClient()
+                    }
+                    Button("Cancel", role: .cancel) { }
+                } message: {
+                    Text("The simulator client will be disconnected from the BLE provider.")
+                }
             }
         }
         .frame(minHeight: 26)
