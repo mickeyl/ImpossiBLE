@@ -83,6 +83,7 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
         guard let button = statusItem.button else { return }
         button.target = self
         button.action = #selector(toggleControlWindow)
+        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         button.imagePosition = .imageOnly
         button.toolTip = "ImpossiBLE Mock"
     }
