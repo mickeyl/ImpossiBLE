@@ -1,6 +1,22 @@
 ImpossiBLE ChangeLog
 ====================
 
+2.1.2 (2026-05-05)
+------------------
+
+Mock app status item reliability fix.
+
+* Keep the mock app runtime strongly retained so the status item target,
+  provider controllers, and backing store remain alive for the lifetime
+  of the menu bar app.
+* Restore reliable left- and right-click handling for the menu bar icon
+  by sending status item actions on mouse-down and adding a local fallback
+  monitor for status button mouse events.
+* Keep the borderless control panel in front when opened while preserving
+  `Dismiss on Switch` behavior through explicit key-window/deactivation
+  handling instead of AppKit's automatic `hidesOnDeactivate`.
+* Bump the mock app bundle version to 2.1.2.
+
 2.1.1 (2026-05-03)
 ------------------
 

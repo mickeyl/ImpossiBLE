@@ -65,6 +65,7 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
     private var captureWindow: NSWindow?
     private var deviceWindows: [UUID: NSWindow] = [:]
     private var cancellables: Set<AnyCancellable> = []
+    private var statusButtonClickMonitor: Any?
     private static let controlWindowContentSize = NSSize(width: 360, height: 580)
     private static let controlWindowCornerRadius: CGFloat = 10
 
@@ -83,9 +84,22 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
         guard let button = statusItem.button else { return }
         button.target = self
         button.action = #selector(toggleControlWindow)
-        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        button.sendAction(on: [.leftMouseDown, .rightMouseDown])
         button.imagePosition = .imageOnly
         button.toolTip = "ImpossiBLE Mock"
+        statusButtonClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self, weak button] event in
+            guard let self, let button, event.window === button.window else { return event }
+            let location = button.convert(event.locationInWindow, from: nil)
+            guard button.bounds.contains(location) else { return event }
+            self.toggleControlWindow()
+            return nil
+        }
+    }
+
+    deinit {
+        if let statusButtonClickMonitor {
+            NSEvent.removeMonitor(statusButtonClickMonitor)
+        }
     }
 
     private func observeIconState() {
@@ -95,6 +109,9 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
         forwarder.$trafficActive.sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
         NotificationCenter.default.publisher(for: AppPreferences.controlWindowBehaviorDidChange)
             .sink { [weak self] _ in self?.applyControlWindowBehavior() }
+            .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)
+            .sink { [weak self] _ in self?.hideControlWindowAfterDeactivationIfNeeded() }
             .store(in: &cancellables)
     }
 
@@ -125,9 +142,10 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
         let window = controlWindow ?? makeControlWindow()
         applyControlWindowBehavior()
         positionControlWindow(window)
-        window.makeKeyAndOrderFront(nil)
         NSRunningApplication.current.activate(options: [.activateAllWindows])
         NSApplication.shared.activate()
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
     }
 
     private func makeControlWindow() -> NSPanel {
@@ -161,14 +179,19 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
         window.backgroundColor = .clear
         window.level = .floating
         window.collectionBehavior = [.moveToActiveSpace]
-        window.hidesOnDeactivate = AppPreferences.dismissControlWindowOnDeactivate
+        window.hidesOnDeactivate = false
         window.invalidateShadow()
         controlWindow = window
         return window
     }
 
     private func applyControlWindowBehavior() {
-        controlWindow?.hidesOnDeactivate = AppPreferences.dismissControlWindowOnDeactivate
+        controlWindow?.hidesOnDeactivate = false
+    }
+
+    private func hideControlWindowAfterDeactivationIfNeeded() {
+        guard AppPreferences.dismissControlWindowOnDeactivate else { return }
+        hideControlWindow()
     }
 
     private func positionControlWindow(_ window: NSWindow) {
@@ -270,6 +293,16 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
         window.orderFrontRegardless()
         NSRunningApplication.current.activate(options: [.activateAllWindows])
         NSApplication.shared.activate()
+    }
+
+    nonisolated func windowDidResignKey(_ notification: Notification) {
+        Task { @MainActor in
+            guard AppPreferences.dismissControlWindowOnDeactivate,
+                  let window = notification.object as? NSWindow,
+                  window === self.controlWindow
+            else { return }
+            self.hideControlWindow()
+        }
     }
 
     nonisolated func windowWillClose(_ notification: Notification) {
