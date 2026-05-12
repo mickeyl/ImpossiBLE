@@ -103,10 +103,16 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     private func observeIconState() {
-        server.$status.sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
-        server.$trafficActive.sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
-        forwarder.$status.sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
-        forwarder.$trafficActive.sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
+        // @Published emits in willSet, so reading server.trafficActive inside the sink would
+        // see the old value. Hop through the main queue so updateIcon() runs after didSet.
+        server.$status.receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
+        server.$trafficActive.receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
+        forwarder.$status.receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
+        forwarder.$trafficActive.receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
         NotificationCenter.default.publisher(for: AppPreferences.controlWindowBehaviorDidChange)
             .sink { [weak self] _ in self?.applyControlWindowBehavior() }
             .store(in: &cancellables)
