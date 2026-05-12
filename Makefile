@@ -31,6 +31,11 @@ INSTALLED_MOCK_APP = $(INSTALL_DIR)/$(MOCK_BUNDLE)
 MOCK_DIST_ZIP = ImpossiBLE-Mock.zip
 NOTARY_PROFILE ?=
 
+# Monotonic build number derived from commit count; falls back to the
+# value already in the source Info.plist when the tree is not a git
+# checkout (e.g. Homebrew unpacks a tarball).
+BUILD_NUMBER := $(shell git rev-list --count HEAD 2>/dev/null)
+
 .DEFAULT_GOAL := help
 
 .PHONY: help helper debug dev install uninstall clean run stop restart status log watch helper-assess helper-notarize \
@@ -219,6 +224,7 @@ mock-relaunch: helper
 	@mkdir -p $(MOCK_BUNDLE)/Contents/MacOS
 	@mkdir -p $(MOCK_BUNDLE)/Contents/Resources
 	@cp $(MOCK_PLIST) $(MOCK_BUNDLE)/Contents/Info.plist
+	@if [ -n "$(BUILD_NUMBER)" ]; then /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(BUILD_NUMBER)" $(MOCK_BUNDLE)/Contents/Info.plist; fi
 	@cd Sources/MockApp && swift build $(SWIFTPM_FLAGS) 2>&1 | tail -3
 	@cp Sources/MockApp/.build/debug/$(MOCK_BIN_NAME) $(MOCK_BIN)
 	@cp $(MOCK_FONT_RESOURCE) $(MOCK_BUNDLE)/Contents/Resources/
@@ -233,6 +239,7 @@ $(MOCK_BIN): $(MOCK_SRCS) $(MOCK_PLIST) $(MOCK_ENTITLEMENTS) $(MOCK_FONT_RESOURC
 	mkdir -p $(MOCK_BUNDLE)/Contents/MacOS
 	mkdir -p $(MOCK_BUNDLE)/Contents/Resources
 	cp $(MOCK_PLIST) $(MOCK_BUNDLE)/Contents/Info.plist
+	@if [ -n "$(BUILD_NUMBER)" ]; then /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(BUILD_NUMBER)" $(MOCK_BUNDLE)/Contents/Info.plist; fi
 	cd Sources/MockApp && swift build $(SWIFTPM_FLAGS) -c release
 	cp Sources/MockApp/.build/release/ImpossiBLE-Mock $(MOCK_BIN)
 	cp $(MOCK_FONT_RESOURCE) $(MOCK_BUNDLE)/Contents/Resources/
