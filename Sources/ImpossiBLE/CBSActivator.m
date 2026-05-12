@@ -1546,7 +1546,25 @@ static NSDictionary *cbs_connection_event_wire_options(NSDictionary *options) {
     return wire;
 }
 
+// Opens the daemon socket on demand the first time a CBCentralManager is
+// instantiated. We avoid doing this in +load so merely linking ImpossiBLE
+// does not contact the daemon — the host app pays that cost only if it
+// actually uses CoreBluetooth.
+static void cbs_ensure_connection_open(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        CBSConnectionSetMessageHandler(^(NSDictionary *msg) {
+            cbs_handle_message(msg);
+        });
+        CBSConnectionSetStateHandler(^(BOOL connected) {
+            cbs_notify_all_centrals_state_changed();
+        });
+        CBSConnectionOpen();
+    });
+}
+
 static void cbs_post_init(id obj, id delegate, dispatch_queue_t queue) {
+    cbs_ensure_connection_open();
     dispatch_queue_t q = queue ?: dispatch_get_main_queue();
     objc_setAssociatedObject(obj, kCBSDelegateQueueKey, q, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(obj, kCBSIsScanningKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1810,16 +1828,6 @@ static void cbs_swizzle_class(Class cls, SEL sel, IMP imp, IMP *orig_out) {
         NSLog(@"ImpossiBLE: CBCentralManager not found");
         return;
     }
-
-    CBSConnectionSetMessageHandler(^(NSDictionary *msg) {
-        cbs_handle_message(msg);
-    });
-
-    CBSConnectionSetStateHandler(^(BOOL connected) {
-        cbs_notify_all_centrals_state_changed();
-    });
-
-    CBSConnectionOpen();
 
     cbs_swizzle(cls, @selector(initWithDelegate:queue:options:), (IMP)cbs_init, (IMP *)&orig_init);
     cbs_swizzle(cls, @selector(initWithDelegate:queue:), (IMP)cbs_init_noopts, (IMP *)&orig_init_noopts);

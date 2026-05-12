@@ -1,6 +1,32 @@
 ImpossiBLE ChangeLog
 ====================
 
+Unreleased
+----------
+
+Mock app menu bar icon fix and lazy daemon connection on the iOS side.
+
+* Stop the menu bar icon from latching onto the inverse (traffic-active)
+  rendering after activity subsides. `@Published` emits in `willSet`,
+  so the sinks in `StatusBarController.observeIconState` were reading
+  the pre-update value of `server.trafficActive` /
+  `forwarder.trafficActive`. Pre-2.1.3 this was masked because
+  `ForwarderController` reassigned `trafficActive` on every 0.5 s poll
+  tick; the 2.1.3 emission-suppression optimization removed that
+  self-correcting cycle and left the icon stuck on the previous state
+  after the final `true → false` transition. Hop each icon-state sink
+  through `DispatchQueue.main` so `updateIcon()` reads the
+  post-`didSet` value.
+* Defer opening the daemon socket on the iOS side until the host app
+  actually instantiates a `CBCentralManager`. Previously, `+load`
+  installed swizzles *and* called `CBSConnectionOpen()`, so merely
+  linking `ImpossiBLE` triggered a `connect(2)` to
+  `/tmp/impossible.sock` plus the reconnect timer, even for apps that
+  never touched CoreBluetooth. Swizzle installation still happens at
+  `+load` (it must, to intercept the first init), but the socket open
+  is now `dispatch_once`-guarded inside `cbs_post_init`, fired by the
+  first `CBCentralManager` init.
+
 2.1.3 (2026-05-12)
 ------------------
 

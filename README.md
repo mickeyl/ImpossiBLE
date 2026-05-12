@@ -32,7 +32,7 @@ Your app code remains unchanged — `CBCentralManager`, `CBPeripheral`, delegate
 
 ### Under the Hood (Technical Details)
 
-- **Method swizzling on the simulator**: the library swizzles `CBCentralManager` init/state/scan/connect APIs and routes them to a local transport.
+- **Method swizzling on the simulator**: the library swizzles `CBCentralManager` init/state/scan/connect APIs at `+load` and routes them to a local transport. The socket connection to the daemon is opened lazily on the first `CBCentralManager` instantiation, so apps that link ImpossiBLE without using CoreBluetooth do not contact the helper.
 - **Multi-central multiplexing**: multiple `CBCentralManager` instances in the same app work independently, each with its own peripheral store, scan filters, and delegate callbacks — matching real CoreBluetooth behavior where peripherals and their discovered services are shared across managers.
 - **Proxy CoreBluetooth objects**: it creates shim `CBPeripheral`, `CBService`, `CBCharacteristic`, `CBDescriptor`, and `CBL2CAPChannel` objects so your app sees real types.
 - **Transport**: newline-delimited JSON over a Unix domain socket (`/tmp/impossible.sock`), with auto-reconnect.
@@ -54,7 +54,7 @@ Your app code remains unchanged — `CBCentralManager`, `CBPeripheral`, delegate
 - Persistent menu bar control panel with optional dismiss-on-app-switch behavior
 - Connection-aware `CBManagerState` with automatic `centralManagerDidUpdateState:` callbacks
 - Auto-reconnect when the provider starts after the app
-- Automatic `+load` activation — no setup code required
+- Automatic activation — no setup code required; the daemon connection is opened lazily on the first `CBCentralManager` instantiation
 
 ## Requirements
 
@@ -143,7 +143,7 @@ Add ImpossiBLE as a **local Swift package** in your Xcode project pointing to th
 import ImpossiBLE
 ```
 
-That is all. The library activates automatically via `+load` on simulator builds. On device builds, all ImpossiBLE code compiles to no-ops.
+That is all. On simulator builds the library installs its CoreBluetooth swizzles at `+load`; the daemon socket is opened on demand when your app instantiates its first `CBCentralManager`. On device builds, all ImpossiBLE code compiles to no-ops.
 
 ## Limitations
 
