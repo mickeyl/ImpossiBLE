@@ -1,6 +1,23 @@
 ImpossiBLE ChangeLog
 ====================
 
+2.1.3 (2026-05-12)
+------------------
+
+Mock app idle CPU fix.
+
+* Stop the mock menu bar app from burning ~88% CPU while idle. The
+  passthrough activity poll fired `objectWillChange` on four
+  `@Published` properties twice per second even when nothing had
+  changed, driving a continuous SwiftUI layout cycle through the
+  status item icon. Setters in `ForwarderController` now only emit
+  on actual value changes.
+* Cache the rendered Font Awesome menu bar glyph by
+  `(glyph, size, active, mode)` so the icon is not re-rasterised on
+  every refresh tick.
+* Skip reassigning the status item button image when the same
+  `NSImage` instance is already installed.
+
 2.1.2 (2026-05-05)
 ------------------
 

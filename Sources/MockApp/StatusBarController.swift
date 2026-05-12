@@ -116,12 +116,16 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     private func updateIcon() {
-        statusItem.button?.image = FontAwesome.brandImage(
+        guard let button = statusItem.button else { return }
+        let image = FontAwesome.brandImage(
             FontAwesome.bluetoothB,
             size: 16,
             active: server.trafficActive || forwarder.trafficActive,
             mode: menuBarMode
         )
+        if button.image !== image {
+            button.image = image
+        }
     }
 
     private var menuBarMode: FontAwesome.MenuBarMode {

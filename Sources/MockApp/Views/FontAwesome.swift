@@ -13,6 +13,15 @@ enum FontAwesome {
 
     private static var registered = false
 
+    private struct ImageCacheKey: Hashable {
+        let glyph: String
+        let size: CGFloat
+        let active: Bool
+        let mode: MenuBarMode
+    }
+
+    private static var imageCache: [ImageCacheKey: NSImage] = [:]
+
     static func register() {
         guard !registered else { return }
         registered = true
@@ -23,6 +32,10 @@ enum FontAwesome {
     }
 
     static func brandImage(_ glyph: String, size: CGFloat, active: Bool = false, mode: MenuBarMode = .off) -> NSImage {
+        let cacheKey = ImageCacheKey(glyph: glyph, size: size, active: active, mode: mode)
+        if let cached = imageCache[cacheKey] {
+            return cached
+        }
         register()
         let font = NSFont(name: "Font Awesome 6 Brands", size: size)
             ?? NSFont.systemFont(ofSize: size)
@@ -80,6 +93,7 @@ enum FontAwesome {
 
         image.unlockFocus()
         image.isTemplate = !active
+        imageCache[cacheKey] = image
         return image
     }
 }

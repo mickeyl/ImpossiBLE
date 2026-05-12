@@ -210,19 +210,34 @@ final class ForwarderController: ObservableObject {
             }
             .sorted { $0.lastAt > $1.lastAt }
 
-        passthroughDevices = devices
-        trafficActive = devices.contains { $0.isActive }
-        if let client = snapshot.client, client.pid > 0 {
-            connectedClient = SocketClientInfo(pid: client.pid, processName: client.processName)
-        } else {
-            connectedClient = nil
+        if passthroughDevices != devices {
+            passthroughDevices = devices
         }
-        activityUnavailableMessage = nil
+        let nextTrafficActive = devices.contains { $0.isActive }
+        if trafficActive != nextTrafficActive {
+            trafficActive = nextTrafficActive
+        }
+        let nextClient: SocketClientInfo?
+        if let client = snapshot.client, client.pid > 0 {
+            nextClient = SocketClientInfo(pid: client.pid, processName: client.processName)
+        } else {
+            nextClient = nil
+        }
+        if connectedClient != nextClient {
+            connectedClient = nextClient
+        }
+        if activityUnavailableMessage != nil {
+            activityUnavailableMessage = nil
+        }
+        let nextLastActivity: String
         if let latest = devices.first {
             let detail = latest.lastDetail.isEmpty ? "" : " \(latest.lastDetail)"
-            lastActivity = "\(latest.displayName): \(latest.lastOperation)\(detail)"
+            nextLastActivity = "\(latest.displayName): \(latest.lastOperation)\(detail)"
         } else {
-            lastActivity = ""
+            nextLastActivity = ""
+        }
+        if lastActivity != nextLastActivity {
+            lastActivity = nextLastActivity
         }
     }
 
@@ -230,10 +245,18 @@ final class ForwarderController: ObservableObject {
         if !passthroughDevices.isEmpty {
             passthroughDevices = []
         }
-        trafficActive = false
-        lastActivity = ""
-        connectedClient = nil
-        activityUnavailableMessage = unavailableMessage
+        if trafficActive {
+            trafficActive = false
+        }
+        if !lastActivity.isEmpty {
+            lastActivity = ""
+        }
+        if connectedClient != nil {
+            connectedClient = nil
+        }
+        if activityUnavailableMessage != unavailableMessage {
+            activityUnavailableMessage = unavailableMessage
+        }
     }
 
     private func currentPIDs() -> [String] {
@@ -348,7 +371,9 @@ final class ForwarderController: ObservableObject {
 
     private func publish(status: Status) {
         DispatchQueue.main.async {
-            self.status = status
+            if self.status != status {
+                self.status = status
+            }
         }
     }
 }
