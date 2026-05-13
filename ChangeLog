@@ -1,11 +1,21 @@
 ImpossiBLE ChangeLog
 ====================
 
-Unreleased
-----------
+2.2.0 (2026-05-13)
+------------------
 
-Mock app menu bar icon fix and lazy daemon connection on the iOS side.
+Lazy daemon connection on the iOS side, mock menu bar icon fix, and
+a mode-specific mock control panel body.
 
+* Defer opening the daemon socket on the iOS side until the host app
+  actually instantiates a `CBCentralManager`. Previously, `+load`
+  installed swizzles *and* called `CBSConnectionOpen()`, so merely
+  linking `ImpossiBLE` triggered a `connect(2)` to
+  `/tmp/impossible.sock` plus the reconnect timer, even for apps that
+  never touched CoreBluetooth. Swizzle installation still happens at
+  `+load` (it must, to intercept the first init), but the socket open
+  is now `dispatch_once`-guarded inside `cbs_post_init`, fired by the
+  first `CBCentralManager` init.
 * Stop the menu bar icon from latching onto the inverse (traffic-active)
   rendering after activity subsides. `@Published` emits in `willSet`,
   so the sinks in `StatusBarController.observeIconState` were reading
@@ -17,15 +27,15 @@ Mock app menu bar icon fix and lazy daemon connection on the iOS side.
   after the final `true → false` transition. Hop each icon-state sink
   through `DispatchQueue.main` so `updateIcon()` reads the
   post-`didSet` value.
-* Defer opening the daemon socket on the iOS side until the host app
-  actually instantiates a `CBCentralManager`. Previously, `+load`
-  installed swizzles *and* called `CBSConnectionOpen()`, so merely
-  linking `ImpossiBLE` triggered a `connect(2)` to
-  `/tmp/impossible.sock` plus the reconnect timer, even for apps that
-  never touched CoreBluetooth. Swizzle installation still happens at
-  `+load` (it must, to intercept the first init), but the socket open
-  is now `dispatch_once`-guarded inside `cbs_post_init`, fired by the
-  first `CBCentralManager` init.
+* Make the mock control panel body match the selected provider mode.
+  Off now shows a centered placeholder (muted FontAwesome Bluetooth
+  glyph and a "Select Mock or Passthrough to start a provider" hint)
+  instead of the mock device configuration. Mock and Passthrough
+  bodies are unchanged. The footer "+ Add Device" button is hidden
+  outside Mock mode, and the Off and Passthrough placeholders share a
+  single helper so their glyph point size and layout metrics stay in
+  sync.
+* Bump the mock app bundle version to 2.2.0.
 
 2.1.3 (2026-05-12)
 ------------------
