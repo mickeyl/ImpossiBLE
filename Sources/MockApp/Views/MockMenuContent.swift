@@ -21,17 +21,13 @@ struct MockMenuContent: View {
             header
             Divider()
 
-            if currentMode == .passthrough {
-                passthroughBody
-            } else {
-                configBar
-                Divider()
-
-                if showConfigs {
-                    configList
-                    Divider()
-                }
-                deviceList
+            switch currentMode {
+                case .off:
+                    offBody
+                case .mock:
+                    mockBody
+                case .passthrough:
+                    passthroughBody
             }
 
             Divider()
@@ -41,6 +37,40 @@ struct MockMenuContent: View {
             server.store = store
         }
         .background(Color.clear)
+    }
+
+    @ViewBuilder
+    private var mockBody: some View {
+        configBar
+        Divider()
+
+        if showConfigs {
+            configList
+            Divider()
+        }
+        deviceList
+    }
+
+    private var offBody: some View {
+        bodyPlaceholder(message: "Select Mock or Passthrough to start a provider") {
+            Image(nsImage: FontAwesome.brandImage(FontAwesome.bluetoothB, size: Self.bodyPlaceholderGlyphSize))
+                .foregroundStyle(.secondary.opacity(0.35))
+        }
+    }
+
+    fileprivate static let bodyPlaceholderGlyphSize: CGFloat = 34
+
+    @ViewBuilder
+    private func bodyPlaceholder<Icon: View>(message: String, @ViewBuilder icon: () -> Icon) -> some View {
+        VStack(spacing: 10) {
+            icon()
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Mode
@@ -548,17 +578,11 @@ struct MockMenuContent: View {
     }
 
     private func passthroughPlaceholder(systemImage: String, tint: Color, message: String) -> some View {
-        VStack(spacing: 8) {
+        bodyPlaceholder(message: message) {
             Image(systemName: systemImage)
-                .font(.largeTitle)
+                .font(.system(size: Self.bodyPlaceholderGlyphSize))
                 .foregroundStyle(tint)
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Footer
@@ -603,7 +627,7 @@ struct MockMenuContent: View {
 
     private var footer: some View {
         HStack {
-            if currentMode != .passthrough {
+            if currentMode == .mock {
                 Button {
                     store.addDevice()
                 } label: {
