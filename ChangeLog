@@ -1,6 +1,21 @@
 ImpossiBLE ChangeLog
 ====================
 
+2.2.1 (2026-05-14)
+------------------
+
+iOS simulator central lifecycle crash fix.
+
+* Fix a crash in ImpossiBLE's `CBCentralManager` `dealloc` swizzle that
+  could be triggered by short-lived central managers, for example when an
+  add-device flow creates a scanner and releases it when the view model is
+  dismissed. The swizzled `dealloc` now avoids ARC-retained `self`/local
+  object cleanup across the original CoreBluetooth `dealloc`, and the
+  global fallback central reference no longer keeps managers alive.
+* Add an iOS simulator XCTest regression that creates a short-lived central,
+  runs a scan/stop lifecycle, switches the current central, and verifies the
+  short-lived manager can deallocate without crashing.
+
 2.2.0 (2026-05-13)
 ------------------
 

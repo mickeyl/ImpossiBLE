@@ -21,7 +21,7 @@ static CBCentralManager *cbs_owner_central_for_peripheral(NSUUID *identifier);
 static NSArray<CBSPeripheral *> *cbs_all_peripherals_for_uuid(NSUUID *uuid);
 static uint64_t gNextCentralId = 1;
 
-static CBCentralManager *gCentral;
+static __weak CBCentralManager *gCentral;
 static NSHashTable<CBCentralManager *> *gCentrals;
 static NSMapTable<NSString *, CBCentralManager *> *gCentralByKey;
 static NSMutableDictionary<NSUUID *, NSString *> *gPeripheralOwners;
@@ -55,11 +55,17 @@ static void cbs_notify_all_centrals_state_changed(void) {
 
 static dispatch_queue_t cbs_callback_queue(void) {
     CBCentralManager *central = gCentral;
+    if (!central) {
+        return dispatch_get_main_queue();
+    }
     dispatch_queue_t queue = objc_getAssociatedObject(central, kCBSDelegateQueueKey);
     return queue ?: dispatch_get_main_queue();
 }
 
 static dispatch_queue_t cbs_callback_queue_for_central(CBCentralManager *central) {
+    if (!central) {
+        return dispatch_get_main_queue();
+    }
     dispatch_queue_t queue = objc_getAssociatedObject(central, kCBSDelegateQueueKey);
     return queue ?: dispatch_get_main_queue();
 }
@@ -73,6 +79,9 @@ static dispatch_queue_t cbs_callback_queue_for_peripheral(CBSPeripheral *periphe
 }
 
 static NSString *cbs_central_key(CBCentralManager *central) {
+    if (!central) {
+        return nil;
+    }
     NSString *key = objc_getAssociatedObject(central, kCBSCentralKeyKey);
     if (!key) {
         key = [NSString stringWithFormat:@"cbs_%llu", gNextCentralId++];
@@ -1696,15 +1705,17 @@ static BOOL cbs_is_scanning(id self, SEL _cmd) {
     return cbs_is_scanning_for_central((CBCentralManager *)self);
 }
 
-static void (*orig_dealloc)(id, SEL);
-static void cbs_dealloc(id self, SEL _cmd) {
-    NSString *key = objc_getAssociatedObject(self, kCBSCentralKeyKey);
-    if (key) {
-        cbs_cleanup_central_stores(key);
-        [gCentralByKey removeObjectForKey:key];
-    }
-    if (gCentral == self) {
-        gCentral = nil;
+static void (*orig_dealloc)(__unsafe_unretained id, SEL);
+static void cbs_dealloc(__unsafe_unretained id self, SEL _cmd) {
+    if (self) {
+        __unsafe_unretained NSString *key = objc_getAssociatedObject(self, kCBSCentralKeyKey);
+        if (key) {
+            cbs_cleanup_central_stores(key);
+            [gCentralByKey removeObjectForKey:key];
+        }
+        if (gCentral == self) {
+            gCentral = nil;
+        }
     }
     if (orig_dealloc) {
         orig_dealloc(self, _cmd);

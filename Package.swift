@@ -19,5 +19,9 @@ let package = Package(
                 .linkedFramework("CoreBluetooth"),
             ]
         ),
+        .testTarget(
+            name: "ImpossiBLETests",
+            dependencies: ["ImpossiBLE"]
+        ),
     ]
 )
