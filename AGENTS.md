@@ -63,6 +63,14 @@ make mock-notarize NOTARY_PROFILE="impossible-notary"
 
 `make mock-assess` will fail for ad-hoc signed local builds. A distributable mock app needs a `Developer ID Application` identity and notarization.
 
+## Release Checklist
+
+When cutting a new ImpossiBLE release, update the Homebrew formula in
+`mickeyl/homebrew-formulae` as part of the release. Bump
+`Formula/impossible.rb` to the new tag, update the tarball SHA256, run
+`brew audit --strict --online impossible` and `brew style
+Formula/impossible.rb`, then commit and push the tap update.
+
 ## Generated Artifacts
 
 Do not commit generated bundles or build output:
