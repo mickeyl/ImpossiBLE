@@ -60,6 +60,7 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
     private let store: MockStore
     private let server: MockServer
     private let forwarder: ForwarderController
+    private let modeController: ProviderModeController
     private let statusItem: NSStatusItem
     private var controlWindow: NSPanel?
     private var captureWindow: NSWindow?
@@ -69,10 +70,11 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
     private static let controlWindowContentSize = NSSize(width: 360, height: 580)
     private static let controlWindowCornerRadius: CGFloat = 10
 
-    init(store: MockStore, server: MockServer, forwarder: ForwarderController) {
+    init(store: MockStore, server: MockServer, forwarder: ForwarderController, modeController: ProviderModeController) {
         self.store = store
         self.server = server
         self.forwarder = forwarder
+        self.modeController = modeController
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         configureStatusItem()
@@ -163,6 +165,7 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
             store: store,
             server: server,
             forwarder: forwarder,
+            controller: modeController,
             onDismiss: { [weak self] in self?.hideControlWindow() },
             onOpenCapture: { [weak self] in self?.openCaptureWindow() },
             onOpenDevice: { [weak self] deviceId in self?.openDeviceEditor(deviceId) }

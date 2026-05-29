@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 
 private let passthroughActivityPath = "/tmp/impossible-passthrough-activity.json"
+private let socketPath = "/tmp/impossible.sock"
 
 struct PassthroughDeviceActivity: Identifiable, Equatable {
     let id: String
@@ -117,7 +118,13 @@ final class ForwarderController: ObservableObject {
                 }
             }
 
-            Thread.sleep(forTimeInterval: 0.3)
+            // `open` returns before the helper has launched, and the process
+            // appears in `pgrep` before it has bound the socket. Wait for both
+            // so callers observe a provider that can actually accept a client,
+            // instead of guessing with a fixed sleep.
+            self.waitUntil(timeout: 3.0) {
+                !self.currentPIDs().isEmpty && Self.socketIsBound
+            }
             self.refreshSync()
         }
     }
@@ -134,13 +141,31 @@ final class ForwarderController: ObservableObject {
                 } else {
                     _ = self.run("/bin/kill", pids)
                 }
+                // SIGTERM returns immediately; the helper still holds the socket
+                // until it actually exits. Wait for it so a following start()
+                // truly relaunches instead of seeing the dying process and
+                // deciding it is already running.
+                self.waitUntil(timeout: 3.0) { self.currentPIDs().isEmpty }
             }
 
+            try? FileManager.default.removeItem(atPath: passthroughActivityPath)
             self.refreshSync()
             DispatchQueue.main.async {
                 self.clearPassthroughActivity()
             }
         }
+    }
+
+    private func waitUntil(timeout: TimeInterval, _ condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() >= deadline { return }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+    }
+
+    private static var socketIsBound: Bool {
+        access(socketPath, F_OK) == 0
     }
 
     func terminateConnectedClient() {

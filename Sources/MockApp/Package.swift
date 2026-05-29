@@ -26,6 +26,7 @@ let package = Package(
                 "Server/MockServer.swift",
                 "Server/CaptureSession.swift",
                 "Server/ForwarderController.swift",
+                "Server/ProviderModeController.swift",
                 "Views/CaptureSheet.swift",
                 "Views/DescriptorEditorView.swift",
                 "Views/CharacteristicEditorView.swift",

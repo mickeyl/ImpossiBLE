@@ -5,6 +5,7 @@ struct MockMenuContent: View {
     @ObservedObject var store: MockStore
     @ObservedObject var server: MockServer
     @ObservedObject var forwarder: ForwarderController
+    @ObservedObject var controller: ProviderModeController
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
     var onDismiss: (() -> Void)?
@@ -14,6 +15,13 @@ struct MockMenuContent: View {
     @State private var saveConfigName = ""
     @State private var showSaveField = false
     @AppStorage(AppPreferences.dismissControlWindowOnDeactivateKey) private var dismissOnDeactivate = false
+    @AppStorage(AppPreferences.keepHelperRunningOnQuitKey) private var keepHelperRunningOnQuit = false
+    // Launch-at-login lives in a launchd plist, not UserDefaults. Mirror it in
+    // view state so the toggle reflects taps immediately instead of re-reading
+    // the (non-observable) filesystem.
+    @State private var launchAtLogin = FileManager.default.fileExists(atPath: MockMenuContent.launchAgentPath)
+    @State private var settingsAck = ""
+    @State private var ackClear: DispatchWorkItem?
     fileprivate static let statusIconColumnWidth: CGFloat = 24
 
     var body: some View {
@@ -76,34 +84,14 @@ struct MockMenuContent: View {
     // MARK: - Mode
 
     private var currentMode: MockProviderMode {
-        if server.status != .stopped { return .mock }
-        if forwarder.isRunning { return .passthrough }
-        return .off
+        controller.mode
     }
 
     private var modeBinding: Binding<MockProviderMode> {
         Binding(
-            get: { currentMode },
-            set: { setMode($0) }
+            get: { controller.mode },
+            set: { controller.select($0) }
         )
-    }
-
-    private func setMode(_ mode: MockProviderMode) {
-        mode.persist()
-
-        switch mode {
-            case .off:
-                server.stop()
-                forwarder.stop()
-            case .mock:
-                forwarder.stop {
-                    server.start()
-                }
-            case .passthrough:
-                server.stop {
-                    forwarder.start()
-                }
-        }
     }
 
     // MARK: - Header
@@ -134,7 +122,7 @@ struct MockMenuContent: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .disabled(forwarder.isBusy)
+            .disabled(controller.isSwitching)
 
             modeStatusDetail
         }
@@ -325,7 +313,7 @@ struct MockMenuContent: View {
                 .font(.caption)
                 .buttonStyle(.borderless)
                 .help("Capture nearby BLE devices")
-                .disabled(forwarder.isBusy || (!forwarder.canStart && !forwarder.isRunning))
+                .disabled(controller.isSwitching || forwarder.isBusy || (!forwarder.canStart && !forwarder.isRunning))
 
                 Button {
                     saveConfigName = store.activeConfigurationName
@@ -593,17 +581,27 @@ struct MockMenuContent: View {
             .path
     }()
 
-    private var launchAtLoginBinding: Binding<Bool> {
-        Binding(
-            get: { FileManager.default.fileExists(atPath: Self.launchAgentPath) },
-            set: { newValue in
-                if newValue {
-                    Self.writeLaunchAgent()
-                } else {
-                    try? FileManager.default.removeItem(atPath: Self.launchAgentPath)
-                }
+    private func applyLaunchAtLogin(_ enabled: Bool) {
+        if enabled {
+            Self.writeLaunchAgent()
+        } else {
+            try? FileManager.default.removeItem(atPath: Self.launchAgentPath)
+        }
+    }
+
+    /// Briefly shows a one-line receipt in the footer after a preference changes.
+    private func acknowledge(_ message: String) {
+        ackClear?.cancel()
+        withAnimation(.easeInOut(duration: 0.15)) {
+            settingsAck = message
+        }
+        let item = DispatchWorkItem {
+            withAnimation(.easeInOut(duration: 0.3)) {
+                settingsAck = ""
             }
-        )
+        }
+        ackClear = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: item)
     }
 
     private static func writeLaunchAgent() {
@@ -626,7 +624,7 @@ struct MockMenuContent: View {
     }
 
     private var footer: some View {
-        HStack {
+        HStack(spacing: 10) {
             if currentMode == .mock {
                 Button {
                     store.addDevice()
@@ -637,20 +635,46 @@ struct MockMenuContent: View {
                 .buttonStyle(.borderless)
             }
 
+            IconToggle(
+                systemImage: "power",
+                help: "Launch ImpossiBLE Mock automatically at login",
+                isOn: $launchAtLogin
+            )
+            .onChange(of: launchAtLogin) { _, newValue in
+                applyLaunchAtLogin(newValue)
+                acknowledge(newValue ? "Will launch at login" : "Won’t launch at login")
+            }
+
+            IconToggle(
+                systemImage: "eye.slash",
+                help: "Hide this panel when you switch to another app",
+                isOn: $dismissOnDeactivate
+            )
+            .onChange(of: dismissOnDeactivate) { _, newValue in
+                NotificationCenter.default.post(name: AppPreferences.controlWindowBehaviorDidChange, object: nil)
+                acknowledge(newValue ? "Panel auto-hides" : "Panel stays open")
+            }
+
+            if currentMode == .passthrough {
+                IconToggle(
+                    systemImage: "powerplug",
+                    help: "Keep the passthrough helper running in the background after you quit",
+                    isOn: $keepHelperRunningOnQuit
+                )
+                .onChange(of: keepHelperRunningOnQuit) { _, newValue in
+                    acknowledge(newValue ? "Helper kept on quit" : "Helper stops on quit")
+                }
+            }
+
             Spacer()
 
-            Toggle("Launch at Startup", isOn: launchAtLoginBinding)
-                .toggleStyle(.checkbox)
-                .font(.caption)
-                .controlSize(.small)
-
-            Toggle("Dismiss on Switch", isOn: $dismissOnDeactivate)
-                .toggleStyle(.checkbox)
-                .font(.caption)
-                .controlSize(.small)
-                .onChange(of: dismissOnDeactivate) { _, _ in
-                    NotificationCenter.default.post(name: AppPreferences.controlWindowBehaviorDidChange, object: nil)
-                }
+            if !settingsAck.isEmpty {
+                Text(settingsAck)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .transition(.opacity)
+            }
 
             Spacer()
 
@@ -663,6 +687,37 @@ struct MockMenuContent: View {
             .foregroundStyle(.secondary)
         }
         .padding(12)
+    }
+}
+
+/// A label-less preference toggle for the footer. The on state is shown three
+/// ways so it stays unambiguous without text: filled glyph, accent tint, and a
+/// tinted background pill. The meaning lives in the tooltip and accessibility label.
+private struct IconToggle: View {
+    let systemImage: String
+    let help: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button {
+            isOn.toggle()
+        } label: {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .medium))
+                .symbolVariant(isOn ? .fill : .none)
+                .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
+                .frame(width: 26, height: 22)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isOn ? Color.accentColor.opacity(0.15) : .clear)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(help)
+        .accessibilityValue(isOn ? "On" : "Off")
+        .accessibilityAddTraits(isOn ? .isSelected : [])
     }
 }
 

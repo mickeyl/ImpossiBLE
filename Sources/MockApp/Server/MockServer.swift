@@ -66,9 +66,14 @@ final class MockServer: ObservableObject {
         }
     }
 
-    func start() {
+    func start(completion: (() -> Void)? = nil) {
         UserDefaults.standard.set(true, forKey: Self.serverEnabledKey)
         ioQueue.async { [self] in
+            defer {
+                if let completion {
+                    DispatchQueue.main.async(execute: completion)
+                }
+            }
             guard serverFd < 0 else { return }
 
             let fd = socket(AF_UNIX, SOCK_STREAM, 0)
