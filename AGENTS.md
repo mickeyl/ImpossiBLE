@@ -11,7 +11,7 @@
 
 The iOS app does not switch modes directly. It always talks to `/tmp/impossible.sock`; the active macOS provider determines behavior.
 
-The mock menu bar app has a segmented **Off / Mock / Passthrough** picker that controls both providers. Selecting a mode automatically stops the other provider. The menu bar icon reflects the active mode: strikethrough when off, plain Bluetooth when forwarding, dot-badged when mocking. The control panel is a borderless AppKit panel centered under the status item. It is persistent by default; the footer **Dismiss on Switch** checkbox restores popover-style hiding on app deactivation.
+The mock menu bar app has a segmented **Off / Mock / Passthrough** picker that controls both providers. The selected mode is owned by `ProviderModeController` (the single source of truth the picker binds to) so it reflects the choice immediately instead of inferring it from mid-transition provider state; transitions are serialized and stop the other provider. The menu bar icon reflects the active mode: strikethrough when off, plain Bluetooth when forwarding, dot-badged when mocking. The control panel is a borderless AppKit panel centered under the status item. It is persistent by default. The footer carries label-less icon toggles with tooltips: **Launch at Login** (`power`), **Dismiss on Switch** (`eye.slash`, restores popover-style hiding on app deactivation), and — in Passthrough only — **Keep Helper on Quit** (`powerplug`, default off; applied via `applicationShouldTerminate` so it covers ⌘Q too). Changing a toggle shows a brief inline confirmation between the toggles and the Quit button.
 
 In Passthrough mode, the helper writes `/tmp/impossible-passthrough-activity.json` with devices that have actual communication activity. The list intentionally ignores scan/discovery/connect activity and only records GATT/L2CAP operations: characteristic read/write, descriptor read/write, subscribe/unsubscribe, L2CAP open/read/write/close. The mock app polls that snapshot to show communicating devices and pulse the menu bar icon on Passthrough traffic.
 
@@ -62,6 +62,16 @@ make mock-notarize NOTARY_PROFILE="impossible-notary"
 ```
 
 `make mock-assess` will fail for ad-hoc signed local builds. A distributable mock app needs a `Developer ID Application` identity and notarization.
+
+## Debugging Passthrough
+
+The helper has gated verbose tracing, off by default. Enable it with the `IMPOSSIBLE_HELPER_DEBUG` environment variable (works when running the binary directly) or by creating the `/tmp/impossible-helper.debug` sentinel file (works for the `open`/launchd launch path, where env vars don't propagate), then restart the helper. Traces cover the L2CAP lifecycle, stream events, write byte counts, and client connect/disconnect, prefixed with `DEBUG: ImpossiBLE-Helper:`. `NSLog` goes to both stderr (when run directly) and the unified log; the unified log redacts dynamic args as `<private>`, so capture the helper's stderr for full detail.
+
+On a provider-connection drop the simulator-side shim closes open L2CAP channels and synthesizes `didDisconnectPeripheral` for every owned peripheral (`cbs_handle_daemon_disconnect`), so the host app re-establishes instead of hanging on a dead channel.
+
+## Known Follow-ups
+
+- **Single-instance lock for the helper.** Nothing stops two `impossible-helper.app` instances (or helper + mock) from running at once; whichever `bind`s `/tmp/impossible.sock` last does `unlink`+`bind` and steals it, so clients silently bounce between providers. The mock app guards via `pgrep`/LaunchServices and the `currentPIDs` check, but a LaunchAgent + manual launch — or a directly-exec'd helper alongside the LaunchServices-managed one — can still produce two. Add a pidfile `flock`, or refuse to start when a live listener already owns the socket.
 
 ## Release Checklist
 
