@@ -1555,6 +1555,41 @@ static NSDictionary *cbs_connection_event_wire_options(NSDictionary *options) {
     return wire;
 }
 
+// When the daemon socket drops, every peripheral connection and L2CAP channel
+// the daemon held is gone, but the host app has no way to know — its
+// CBL2CAPChannel objects keep pointing at now-dead socketpair streams, so reads
+// and writes silently stall ("device visible, can't communicate"). Mirror real
+// BLE: close the dead channels and synthesize a didDisconnectPeripheral for every
+// affected peripheral so the app's normal disconnect handling tears down and
+// re-establishes instead of hanging on a zombie channel.
+//
+// Runs on the connection reader queue (same queue as cbs_handle_message), so the
+// shared L2CAP/owner dictionaries are not touched concurrently here.
+static void cbs_handle_daemon_disconnect(void) {
+    NSMutableSet<NSString *> *affected = [NSMutableSet set];
+    for (NSUUID *uuid in gPeripheralOwners.allKeys) {
+        if (uuid.UUIDString.length) {
+            [affected addObject:uuid.UUIDString];
+        }
+    }
+    for (NSString *chanId in gL2CAPChannels.allKeys) {
+        NSString *peripheralId = [[chanId componentsSeparatedByString:@":"] firstObject];
+        if (peripheralId.length) {
+            [affected addObject:peripheralId];
+        }
+        cbs_l2cap_close(chanId);
+    }
+
+    for (NSString *uuidStr in affected) {
+        cbs_handle_message(@{
+            @"type": @"didDisconnect",
+            @"id": uuidStr,
+            @"error": @"ImpossiBLE provider connection lost",
+            @"isReconnecting": @NO
+        });
+    }
+}
+
 // Opens the daemon socket on demand the first time a CBCentralManager is
 // instantiated. We avoid doing this in +load so merely linking ImpossiBLE
 // does not contact the daemon — the host app pays that cost only if it
@@ -1566,6 +1601,9 @@ static void cbs_ensure_connection_open(void) {
             cbs_handle_message(msg);
         });
         CBSConnectionSetStateHandler(^(BOOL connected) {
+            if (!connected) {
+                cbs_handle_daemon_disconnect();
+            }
             cbs_notify_all_centrals_state_changed();
         });
         CBSConnectionOpen();
