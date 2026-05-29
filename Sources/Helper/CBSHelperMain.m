@@ -6,12 +6,48 @@
 #import <signal.h>
 #import <unistd.h>
 #import <libproc.h>
+#import <stdlib.h>
+#import <string.h>
 
 static const char *kCBSSocketPath = "/tmp/impossible.sock";
 static const char *kCBSActivityPath = "/tmp/impossible-passthrough-activity.json";
+static const char *kCBSDebugSentinelPath = "/tmp/impossible-helper.debug";
 static void *kCBSServiceIdKey = &kCBSServiceIdKey;
 static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
 static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
+
+// Verbose tracing, off by default. Enabled for the lifetime of the process if
+// either IMPOSSIBLE_HELPER_DEBUG is set (works when the binary is launched
+// directly) or /tmp/impossible-helper.debug exists (works for the `open`/launchd
+// launch path, where env vars don't propagate). Toggle, then restart the helper.
+static BOOL CBSDebugEnabled(void) {
+    static BOOL enabled = NO;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        const char *env = getenv("IMPOSSIBLE_HELPER_DEBUG");
+        if (env && env[0] != '\0' && strcmp(env, "0") != 0) {
+            enabled = YES;
+        } else if (access(kCBSDebugSentinelPath, F_OK) == 0) {
+            enabled = YES;
+        }
+    });
+    return enabled;
+}
+
+#define CBSDebugLog(fmt, ...) \
+    do { if (CBSDebugEnabled()) NSLog(@"DEBUG: ImpossiBLE-Helper: " fmt, ##__VA_ARGS__); } while (0)
+
+static NSString *CBSStreamEventName(NSStreamEvent event) {
+    switch (event) {
+        case NSStreamEventNone:              return @"None";
+        case NSStreamEventOpenCompleted:     return @"OpenCompleted";
+        case NSStreamEventHasBytesAvailable: return @"HasBytesAvailable";
+        case NSStreamEventHasSpaceAvailable: return @"HasSpaceAvailable";
+        case NSStreamEventErrorOccurred:     return @"ErrorOccurred";
+        case NSStreamEventEndEncountered:    return @"EndEncountered";
+        default:                             return [NSString stringWithFormat:@"0x%lx", (unsigned long)event];
+    }
+}
 
 @interface CBSHelper : NSObject <CBCentralManagerDelegate, CBPeripheralDelegate, NSStreamDelegate>
 @property(nonatomic, strong) CBCentralManager *central;
@@ -224,6 +260,8 @@ static NSString *CBSProcessNameForPID(pid_t pid) {
         return;
     }
     if (generation != self.clientGeneration || fd != self.clientFd) {
+        CBSDebugLog(@"ignoring stale disconnect fd=%d gen=%llu (current fd=%d gen=%llu)",
+                    fd, generation, self.clientFd, self.clientGeneration);
         return;
     }
     self.clientFd = -1;
@@ -233,6 +271,8 @@ static NSString *CBSProcessNameForPID(pid_t pid) {
 
     NSArray<CBPeripheral *> *peripherals = [self.peripherals allValues];
     NSArray<CBL2CAPChannel *> *channels = [self.l2capById allValues];
+    CBSDebugLog(@"client disconnect fd=%d gen=%llu tearing down peripherals=%lu l2capChannels=%lu",
+                fd, generation, (unsigned long)peripherals.count, (unsigned long)channels.count);
 
     [self.peripherals removeAllObjects];
     [self.servicesById removeAllObjects];
@@ -311,6 +351,7 @@ static NSString *CBSProcessNameForPID(pid_t pid) {
         }
         [strongSelf.pendingL2capOpenTimers removeObjectForKey:peripheralId];
         dispatch_source_cancel(timer);
+        CBSDebugLog(@"openL2CAP TIMEOUT peripheral=%@ PSM=%u", peripheralId.UUIDString, psm);
         [strongSelf sendMessage:@{
             @"type": @"didOpenL2CAP",
             @"id": peripheralId.UUIDString,
@@ -768,9 +809,19 @@ static NSString *CBSProcessNameForPID(pid_t pid) {
         }
         NSString *detail = [NSString stringWithFormat:@"PSM %@", psmNum ?: @0];
         [self recordActivityForPeripheral:peripheral operation:@"Open L2CAP" detail:detail];
+        CBSDebugLog(@"openL2CAP request peripheral=%@ PSM=%@", uuidStr, psmNum ?: @0);
         dispatch_async(self.cbQueue, ^{
             peripheral.delegate = self;
             CBL2CAPPSM psm = (CBL2CAPPSM)psmNum.unsignedShortValue;
+            // Clients (and apps) sometimes fire openL2CAPChannel: twice in quick
+            // succession. Forwarding both makes CoreBluetooth fail the second with
+            // "PSM already connected" and races two didOpenL2CAP callbacks back to
+            // the client, which can leave it holding the failed one. Coalesce: if an
+            // open is already in flight for this peripheral, drop the duplicate.
+            if (self.pendingL2capOpenTimers[peripheral.identifier]) {
+                CBSDebugLog(@"openL2CAP coalesced duplicate for peripheral=%@", uuidStr);
+                return;
+            }
             [self schedulePendingL2capOpenTimeoutForPeripheral:peripheral psm:psm];
             [peripheral openL2CAPChannel:psm];
         });
@@ -785,6 +836,7 @@ static NSString *CBSProcessNameForPID(pid_t pid) {
         }
         CBL2CAPChannel *channel = self.l2capById[chanId];
         if (!channel) {
+            CBSDebugLog(@"l2capWrite DROPPED: no open channel for chan=%@ (stale handle?)", chanId);
             return;
         }
         NSString *peripheralId = [self peripheralIdFromChannelId:chanId];
@@ -792,10 +844,18 @@ static NSString *CBSProcessNameForPID(pid_t pid) {
         [self recordActivityForPeripheralIdString:peripheralId operation:@"L2CAP write" detail:detail];
         NSData *data = [[NSData alloc] initWithBase64EncodedString:valueB64 options:0];
         if (!data) {
+            CBSDebugLog(@"l2capWrite chan=%@ DROPPED: undecodable base64 (len=%lu)",
+                        chanId, (unsigned long)valueB64.length);
             return;
         }
         dispatch_async(dispatch_get_main_queue(), ^{
-            [channel.outputStream write:data.bytes maxLength:data.length];
+            BOOL hadSpace = channel.outputStream.hasSpaceAvailable;
+            NSInteger written = [channel.outputStream write:data.bytes maxLength:data.length];
+            CBSDebugLog(@"l2capWrite chan=%@ requested=%lu written=%ld hadSpaceBefore=%d streamStatus=%lu%@",
+                        chanId, (unsigned long)data.length, (long)written, hadSpace,
+                        (unsigned long)channel.outputStream.streamStatus,
+                        (written < (NSInteger)data.length)
+                            ? @"  <-- SHORT/FAILED WRITE, bytes lost" : @"");
         });
         return;
     }
@@ -858,10 +918,14 @@ static NSString *CBSProcessNameForPID(pid_t pid) {
             return;
         }
         if (![self writeAllToFd:fd bytes:data.bytes length:data.length]) {
+            CBSDebugLog(@"write to client failed (type=%@ len=%lu) errno=%d; disconnecting",
+                        msg[@"type"], (unsigned long)data.length, errno);
             [self handleClientDisconnectLockedForFd:fd generation:generation];
             return;
         }
         if (![self writeAllToFd:fd bytes:"\n" length:1]) {
+            CBSDebugLog(@"write newline to client failed (type=%@) errno=%d; disconnecting",
+                        msg[@"type"], errno);
             [self handleClientDisconnectLockedForFd:fd generation:generation];
             return;
         }
@@ -1443,6 +1507,8 @@ connectionEventDidOccur:(CBConnectionEvent)event
     [self cancelPendingL2capOpenForPeripheralId:peripheral.identifier];
     NSString *errStr = error ? [error localizedDescription] : @"";
     if (error || !channel) {
+        CBSDebugLog(@"didOpenL2CAP FAILED peripheral=%@ error=%@",
+                    peripheral.identifier.UUIDString, errStr.length ? errStr : @"(no channel)");
         [self sendMessage:@{
             @"type": @"didOpenL2CAP",
             @"id": peripheral.identifier.UUIDString,
@@ -1458,6 +1524,7 @@ connectionEventDidOccur:(CBConnectionEvent)event
                         channel.PSM,
                         channel];
     self.l2capById[chanId] = channel;
+    CBSDebugLog(@"didOpenL2CAP OK chan=%@ PSM=%u", chanId, channel.PSM);
 
     dispatch_async(dispatch_get_main_queue(), ^{
         channel.inputStream.delegate = (id<NSStreamDelegate>)self;
@@ -1524,6 +1591,9 @@ connectionEventDidOccur:(CBConnectionEvent)event
 - (void)stream:(NSStream *)aStream handleEvent:(NSStreamEvent)eventCode {
     NSString *key = [NSString stringWithFormat:@"%p", aStream];
     NSString *chanId = self.streamToL2capId[key];
+    CBSDebugLog(@"stream %@ event=%@ chan=%@",
+                [aStream isKindOfClass:[NSInputStream class]] ? @"in" : @"out",
+                CBSStreamEventName(eventCode), chanId ?: @"<unmapped>");
     if (!chanId) {
         return;
     }
@@ -1532,6 +1602,7 @@ connectionEventDidOccur:(CBConnectionEvent)event
         uint8_t buf[2048];
         NSInputStream *inStream = (NSInputStream *)aStream;
         NSInteger n = [inStream read:buf maxLength:sizeof(buf)];
+        CBSDebugLog(@"l2cap read chan=%@ bytes=%ld", chanId, (long)n);
         if (n > 0) {
             NSString *peripheralId = [self peripheralIdFromChannelId:chanId];
             CBL2CAPChannel *channel = self.l2capById[chanId];
@@ -1545,6 +1616,8 @@ connectionEventDidOccur:(CBConnectionEvent)event
     }
 
     if (eventCode == NSStreamEventEndEncountered || eventCode == NSStreamEventErrorOccurred) {
+        CBSDebugLog(@"l2cap stream %@ chan=%@ error=%@",
+                    CBSStreamEventName(eventCode), chanId, aStream.streamError ?: @"(none)");
         [self sendMessage:@{@"type": @"l2capClosed", @"channelId": chanId}];
         CBL2CAPChannel *channel = self.l2capById[chanId];
         if (channel) {
@@ -1569,6 +1642,8 @@ int main(int argc, const char *argv[]) {
     @autoreleasepool {
         signal(SIGPIPE, SIG_IGN);
         NSLog(@"ImpossiBLE-Helper: starting");
+        NSLog(@"ImpossiBLE-Helper: debug logging %@ (toggle via env IMPOSSIBLE_HELPER_DEBUG or file %s)",
+              CBSDebugEnabled() ? @"ON" : @"off", kCBSDebugSentinelPath);
         CBSHelper *helper = [[CBSHelper alloc] init];
         [helper start];
         [[NSRunLoop currentRunLoop] run];
