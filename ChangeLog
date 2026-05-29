@@ -1,6 +1,27 @@
 ImpossiBLE ChangeLog
 ====================
 
+2.3.1 (2026-05-29)
+------------------
+
+Passthrough L2CAP reliability fixes.
+
+* Fix L2CAP channels hanging after a passthrough daemon reconnect. When the
+  daemon socket dropped, the shim only re-emitted centralManagerDidUpdateState:
+  and left CBL2CAPChannels pointing at now-dead socketpair streams, so the host
+  app silently stalled ("device visible, can't communicate") until it was
+  restarted. On connection loss the shim now closes the dead channels and
+  synthesizes didDisconnectPeripheral for every affected peripheral, so the app's
+  normal disconnect handling tears down and re-establishes cleanly.
+* Coalesce duplicate openL2CAPChannel: requests in the helper. A client (or app)
+  firing two opens in quick succession made CoreBluetooth fail the second with
+  "PSM already connected" and raced two didOpenL2CAP callbacks back to the
+  client, which could leave it holding the failed channel.
+* Add gated debug tracing to the passthrough helper, enabled via the
+  IMPOSSIBLE_HELPER_DEBUG environment variable or a /tmp/impossible-helper.debug
+  sentinel file, covering the L2CAP lifecycle, stream events, write results, and
+  client connect/disconnect. Off by default.
+
 2.3.0 (2026-05-29)
 ------------------
 
