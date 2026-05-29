@@ -1,6 +1,31 @@
 ImpossiBLE ChangeLog
 ====================
 
+2.3.0 (2026-05-29)
+------------------
+
+Reliable mock provider mode switching and a configurable passthrough
+helper lifecycle.
+
+* Make the mock app's provider mode (Off / Mock / Passthrough) switch
+  reliably. A new `ProviderModeController` owns the selected mode as the
+  single source of truth, so the picker reflects the choice immediately
+  instead of inferring it from the mid-transition state of the mock
+  server and the passthrough helper, which could make it snap back while
+  a slow helper launched. Mode transitions are serialized so rapid
+  switches converge on the last choice.
+* Make the passthrough helper start/stop readiness-aware. Starting now
+  waits until the helper process is up and its socket is bound instead of
+  guessing with a fixed delay, and stopping waits for the process to
+  actually exit so an immediately following start truly relaunches it.
+* Add a "keep passthrough helper running on quit" preference, applied via
+  `applicationShouldTerminate` so it covers both the Quit button and
+  Cmd-Q. It defaults to stopping the helper, leaving no orphaned
+  background process.
+* Replace the control panel footer's preference checkboxes with compact
+  icon toggles and a transient one-line confirmation, and fix the
+  launch-at-login toggle not reflecting taps.
+
 2.2.1 (2026-05-14)
 ------------------
 
