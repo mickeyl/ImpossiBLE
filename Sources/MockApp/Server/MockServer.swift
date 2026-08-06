@@ -22,6 +22,16 @@ struct SocketClientInfo: Equatable {
     }
 }
 
+/// A configuration handed over by the connected app, shown in place of the
+/// user's selection while it is active.
+struct ClientSuppliedConfiguration: Equatable {
+    let name: String
+    let devices: [MockDevice]
+    let client: SocketClientInfo?
+
+    var sourceDescription: String { client?.displayText ?? "connected app" }
+}
+
 /// Socket server that implements the ImpossiBLE helper protocol with mock data.
 /// All socket I/O runs on `ioQueue`. UI-facing state is published on the main thread.
 final class MockServer: ObservableObject {
@@ -36,6 +46,10 @@ final class MockServer: ObservableObject {
     @Published var trafficActive: Bool = false
     @Published private(set) var connectedClient: SocketClientInfo?
     @Published var connectedDeviceIDs: Set<String> = []
+    /// Set while the connected client supplies its own devices. Published in
+    /// full — not just the name — because the device list would otherwise show
+    /// the user's configuration while a different one is being served.
+    @Published private(set) var clientSuppliedConfiguration: ClientSuppliedConfiguration?
     @Published var pairedDeviceIDs: Set<String> = []
 
     private let ioQueue = DispatchQueue(label: "impossible.mock.io")
@@ -55,6 +69,10 @@ final class MockServer: ObservableObject {
     private var writtenCharValues: [String: Data] = [:]
     private var writtenDescValues: [String: Data] = [:]
     private var notifyingCharacteristics = Set<String>()
+    /// A configuration uploaded by the connected client. Deliberately kept in
+    /// memory only: it must never overwrite the user's saved configurations,
+    /// and it dies with the connection that supplied it.
+    private var clientSuppliedDevices: [MockDevice]?
 
     weak var store: MockStore?
 
@@ -197,6 +215,7 @@ final class MockServer: ObservableObject {
         writtenCharValues.removeAll()
         writtenDescValues.removeAll()
         notifyingCharacteristics.removeAll()
+        clearClientSuppliedConfiguration()
         scanActive = false
         scanTimer?.cancel()
         scanTimer = nil
@@ -232,6 +251,8 @@ final class MockServer: ObservableObject {
             scanActive = false
             connectedPeripherals.removeAll()
             pairedPeripherals.removeAll()
+            // An uploaded configuration belongs to the connection that sent it.
+            clearClientSuppliedConfiguration()
 
             publishDeviceState()
             publishStatus(.listening)
@@ -339,6 +360,8 @@ final class MockServer: ObservableObject {
         case "setNotify":       handleSetNotify(msg)
         case "readRSSI":        handleReadRSSI(msg)
         case "registerForConnectionEvents": break
+        case "setMockConfiguration":   handleSetMockConfiguration(msg)
+        case "clearMockConfiguration": clearClientSuppliedConfiguration()
         case "openL2CAP":       handleOpenL2CAP(msg)
         case "l2capWrite", "l2capClose": break
         default:
@@ -349,11 +372,59 @@ final class MockServer: ObservableObject {
     // MARK: - Helpers for main-thread store access
 
     private func fetchEnabledDevices() -> [MockDevice] {
-        DispatchQueue.main.sync { store?.enabledDevices ?? [] }
+        if let clientSuppliedDevices {
+            return clientSuppliedDevices.filter(\.isEnabled)
+        }
+        return DispatchQueue.main.sync { store?.enabledDevices ?? [] }
     }
 
     private func fetchDevice(uuid: String) -> MockDevice? {
-        DispatchQueue.main.sync { store?.devices.first { $0.id.uuidString == uuid } }
+        if let clientSuppliedDevices {
+            return clientSuppliedDevices.first { $0.id.uuidString == uuid }
+        }
+        return DispatchQueue.main.sync { store?.devices.first { $0.id.uuidString == uuid } }
+    }
+
+    // MARK: - Client-supplied configuration
+
+    private func handleSetMockConfiguration(_ msg: [String: Any]) {
+        guard let raw = msg["configuration"] else {
+            sendMockConfigurationResult(ok: false, error: "missing configuration")
+            return
+        }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: raw)
+            let configuration = try JSONDecoder().decode(MockConfiguration.self, from: data)
+            clientSuppliedDevices = configuration.devices
+
+            let published = ClientSuppliedConfiguration(
+                name: configuration.name,
+                devices: configuration.devices,
+                client: clientInfo
+            )
+            DispatchQueue.main.async { self.clientSuppliedConfiguration = published }
+            let name = configuration.name
+            log("Client supplied configuration '\(name)' with \(configuration.devices.count) device(s)")
+            sendMockConfigurationResult(ok: true, error: nil)
+        } catch {
+            // Report back rather than failing silently: a test that uploads a
+            // malformed fixture would otherwise just see an empty scan.
+            log("Rejected client configuration: \(error.localizedDescription)")
+            sendMockConfigurationResult(ok: false, error: error.localizedDescription)
+        }
+    }
+
+    private func clearClientSuppliedConfiguration() {
+        guard clientSuppliedDevices != nil else { return }
+        clientSuppliedDevices = nil
+        DispatchQueue.main.async { self.clientSuppliedConfiguration = nil }
+        log("Client configuration cleared; serving the selected configuration again")
+    }
+
+    private func sendMockConfigurationResult(ok: Bool, error: String?) {
+        var msg: [String: Any] = ["type": "didSetMockConfiguration", "ok": ok]
+        if let error { msg["error"] = error }
+        send(msg)
     }
 
     // MARK: - Scan

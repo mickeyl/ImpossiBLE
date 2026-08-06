@@ -49,14 +49,85 @@ struct MockMenuContent: View {
 
     @ViewBuilder
     private var mockBody: some View {
-        configBar
-        Divider()
-
-        if showConfigs {
-            configList
+        // A client-supplied configuration replaces what is being served, so it
+        // has to replace what is shown too — otherwise the panel quietly lies
+        // about which devices exist.
+        if let supplied = server.clientSuppliedConfiguration {
+            clientConfigBanner(supplied)
             Divider()
+            clientDeviceList(supplied)
+        } else {
+            configBar
+            Divider()
+
+            if showConfigs {
+                configList
+                Divider()
+            }
+            deviceList
         }
-        deviceList
+    }
+
+    private func clientConfigBanner(_ supplied: ClientSuppliedConfiguration) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                Text(supplied.name)
+                    .font(.subheadline)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Text("\(supplied.devices.count) devices")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Text("Supplied by \(supplied.sourceDescription) · your selection resumes when it disconnects")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.10))
+    }
+
+    /// Read-only on purpose: these devices belong to the client, and editing
+    /// them here would be silently discarded on its next upload.
+    private func clientDeviceList(_ supplied: ClientSuppliedConfiguration) -> some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 1) {
+                ForEach(supplied.devices) { device in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Image(systemName: device.isEnabled ? "dot.radiowaves.left.and.right" : "circle.slash")
+                                .font(.caption)
+                                .foregroundStyle(device.isEnabled ? .primary : .secondary)
+                            Text(device.name)
+                                .font(.subheadline)
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            Text("\(device.rssi) dBm")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let service = device.advertisedServiceUUIDs.first {
+                            Text(service)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+        .frame(maxHeight: .infinity)
     }
 
     private var offBody: some View {

@@ -24,6 +24,8 @@ The repo also includes a **mock menu bar app** that listens on the same socket a
 
 Your app code remains unchanged — `CBCentralManager`, `CBPeripheral`, delegate callbacks, and all other CoreBluetooth types work as expected.
 
+An app can also **bring its own mock configuration** instead of relying on the menu bar selection; see [Client-Supplied Configurations](#client-supplied-configurations) below.
+
 <p align="center">
   <img src="screenshot-mock.png" alt="Mock mode" width="300">
   &nbsp;&nbsp;
@@ -55,6 +57,7 @@ Your app code remains unchanged — `CBCentralManager`, `CBPeripheral`, delegate
 - Connection-aware `CBManagerState` with automatic `centralManagerDidUpdateState:` callbacks
 - Auto-reconnect when the provider starts after the app
 - Automatic activation — no setup code required; the daemon connection is opened lazily on the first `CBCentralManager` instantiation
+- Client-supplied mock configurations, so tests can carry their own virtual peripherals
 
 ## Requirements
 
@@ -76,6 +79,45 @@ make run
 # In Xcode: add ImpossiBLE as a local Swift package dependency,
 # then build and run your app in the iOS Simulator.
 ```
+
+## Client-Supplied Configurations
+
+Mock mode normally serves whatever configuration is selected in the menu bar app. That is convenient for exploring, but awkward for tests: the fixture lives somewhere else, and it silently goes stale. It breaks entirely when the service UUIDs under test are *computed* at runtime rather than fixed — a saved configuration then describes the wrong device and the test just sees an empty scan.
+
+So an app can upload its own configuration:
+
+```swift
+import ImpossiBLE
+
+let configuration: Data = try JSONEncoder().encode(myFixture)
+if ImpossiBLESetMockConfiguration(configuration) {
+    // The mock now serves these devices instead of the menu bar selection.
+}
+```
+
+The payload has the same shape as a saved configuration file, so an exported configuration can be handed over verbatim:
+
+```json
+{
+  "id": "…",
+  "name": "Two peers and a stranger",
+  "devices": [ { "id": "…", "name": "…", "advertisedServiceUUIDs": ["…"], "services": [ … ] } ]
+}
+```
+
+Three properties are worth knowing:
+
+- **Ephemeral.** The uploaded configuration is held in memory by the provider. It is never written to your saved configurations, and it is discarded when the app disconnects or another app connects. Your own selection resumes automatically.
+- **Visible.** While a client configuration is active the menu bar panel shows it in place of the selection — which app supplied it, its name, and a read-only list of the devices actually being served.
+- **Verified.** The provider acknowledges with `didSetMockConfiguration`, reporting a decoding failure rather than leaving a malformed fixture to look like an empty environment.
+
+`ImpossiBLEIsProviderConnected()` waits briefly for the socket, so it is safe to call at start-up before any `CBCentralManager` exists. On device builds every function is a no-op returning `NO`, so the same code can run in both places and simply use the real radio.
+
+### Limitations
+
+Mock mode answers `openL2CAPChannel` with *"L2CAP is not supported in mock mode"*. An app whose bulk transfer runs over L2CAP can still verify its full GATT control plane — advertising filters, service and characteristic discovery, subscriptions, and any PSM handshake — against a mock, but the channel itself needs Passthrough mode or real hardware.
+
+Pin the provider alongside the library: a client built against 2.4.0 talking to an older provider has its upload ignored as an unknown message type and then scans against whatever that provider happens to serve.
 
 ## Forwarding vs Mocking
 

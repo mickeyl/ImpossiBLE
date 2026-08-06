@@ -1,6 +1,48 @@
 ImpossiBLE ChangeLog
 ====================
 
+2.4.0 (2026-08-06)
+------------------
+
+Client-supplied mock configurations.
+
+An app can now hand its own virtual peripherals to the mock provider instead of
+depending on whatever is selected in the menu bar app. This is what makes mock
+mode usable from tests: the fixture lives with the test that needs it, and it
+works for service UUIDs that are computed at runtime rather than fixed — where a
+saved configuration would silently describe the wrong device.
+
+* New public API in ImpossiBLE.h:
+  - ImpossiBLESetMockConfiguration(NSData *) uploads a configuration in the same
+    JSON shape as a saved configuration file, so an exported one can be handed
+    over verbatim.
+  - ImpossiBLEClearMockConfiguration() returns control to the menu bar
+    selection.
+  - ImpossiBLEIsProviderConnected() waits briefly for the provider, because the
+    socket is opened asynchronously and an immediate check would nearly always
+    report "not connected".
+* New protocol messages setMockConfiguration and clearMockConfiguration, with a
+  didSetMockConfiguration acknowledgement that reports decoding failures instead
+  of leaving a test to wonder why its scan came back empty.
+* An uploaded configuration is deliberately ephemeral: it is held in memory by
+  the server only, never written to the user's saved configurations, and it is
+  discarded when the client disconnects or a new client connects.
+* The menu bar panel shows a client-supplied configuration in place of the
+  user's selection, with the supplying process, the device count, and a
+  read-only device list. Showing only a banner while still listing the user's
+  own devices would have made the panel describe devices that are not being
+  served.
+
+Known limitation: mock mode still answers openL2CAPChannel with "L2CAP is not
+supported in mock mode". Passthrough mode is unaffected. Apps whose bulk
+transfer runs over L2CAP can verify their GATT control plane against a mock but
+still need hardware for the channel itself.
+
+Compatibility: purely additive. A client built against 2.4.0 talking to an older
+provider will have its setMockConfiguration ignored as an unknown message type,
+and will then scan against whatever that provider serves — so pin the provider
+alongside the library when using this API.
+
 2.3.1 (2026-05-29)
 ------------------
 
