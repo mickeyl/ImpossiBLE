@@ -113,9 +113,23 @@ Three properties are worth knowing:
 
 `ImpossiBLEIsProviderConnected()` waits briefly for the socket, so it is safe to call at start-up before any `CBCentralManager` exists. On device builds every function is a no-op returning `NO`, so the same code can run in both places and simply use the real radio.
 
-### Limitations
+### L2CAP Against Yourself
 
-Mock mode answers `openL2CAPChannel` with *"L2CAP is not supported in mock mode"*. An app whose bulk transfer runs over L2CAP can still verify its full GATT control plane — advertising filters, service and characteristic discovery, subscriptions, and any PSM handshake — against a mock, but the channel itself needs Passthrough mode or real hardware.
+A mock provider cannot answer an L2CAP channel: nothing on its side knows what bytes your protocol expects. Only your app does. So rather than inventing a peer, ImpossiBLE hands your app the *other end* of the channel:
+
+```swift
+ImpossiBLESetMockL2CAPHandler { psm, input, output in
+    // The peer end. Speak your own protocol back at yourself.
+}
+```
+
+`openL2CAPChannel` is then served in process — a `socketpair` backs the channel, your app gets one end as a normal `CBL2CAPChannel`, the handler gets the other as an already-open stream pair. The provider is not involved, so the loop runs at memory speed.
+
+This matters most for apps whose peripheral role cannot run in the Simulator at all: `CBPeripheralManager` is unavailable there, but the *framing* on both sides is usually the same code. Playing both roles exercises encode → wire → decode against real CoreBluetooth objects.
+
+The handler applies only while a client-supplied configuration is active. In Passthrough mode the real channel is used and a registered handler is ignored, so a loopback can never quietly shadow the hardware you switched to.
+
+### Limitations
 
 Pin the provider alongside the library: a client built against 2.4.0 talking to an older provider has its upload ignored as an unknown message type and then scans against whatever that provider happens to serve.
 

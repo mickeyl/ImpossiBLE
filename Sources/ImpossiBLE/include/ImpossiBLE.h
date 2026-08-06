@@ -37,4 +37,29 @@ void ImpossiBLEClearMockConfiguration(void);
 /// Tests should wait for this before uploading a configuration.
 BOOL ImpossiBLEIsProviderConnected(void);
 
+/// Receives the far end of an L2CAP channel the app just opened.
+///
+/// `psm` is a `CBL2CAPPSM`, typed here as `uint16_t` so this header stays free
+/// of CoreBluetooth. The streams are already open; the handler owns scheduling
+/// them and closing them when done.
+typedef void (^ImpossiBLEL2CAPPeerHandler)(uint16_t psm,
+                                           NSInputStream *input,
+                                           NSOutputStream *output);
+
+/// Serves L2CAP channels locally, so an app can talk to itself over one.
+///
+/// A mock peripheral cannot answer an L2CAP channel: nothing on the provider
+/// side knows what bytes your protocol expects. Only the app does — so instead
+/// of inventing a peer, ImpossiBLE hands the app the other end of the channel
+/// and lets it play both roles. For an app whose peripheral role cannot run in
+/// the Simulator at all, this is the only way to exercise the bulk-transfer
+/// path without hardware.
+///
+/// Applies only while a client-supplied configuration is active. In Passthrough
+/// mode the real channel is used, so a registered handler is ignored rather
+/// than shadowing the hardware.
+///
+/// Pass nil to stop serving channels locally.
+void ImpossiBLESetMockL2CAPHandler(ImpossiBLEL2CAPPeerHandler _Nullable handler);
+
 NS_ASSUME_NONNULL_END

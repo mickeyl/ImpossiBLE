@@ -1,6 +1,35 @@
 ImpossiBLE ChangeLog
 ====================
 
+2.5.0 (2026-08-06)
+------------------
+
+Loopback L2CAP for client-supplied mock configurations.
+
+Mock mode used to answer openL2CAPChannel: with "L2CAP is not supported in mock
+mode", which left any app whose bulk transfer runs over L2CAP unable to test
+that path without hardware. A mock provider cannot serve such a channel — it
+has no idea what bytes your protocol expects. Only the app does. So instead of
+inventing a peer, ImpossiBLE now hands the app the other end of the channel.
+
+* New ImpossiBLESetMockL2CAPHandler(). When a handler is registered and a
+  client-supplied configuration is active, openL2CAPChannel: is served in
+  process: a socketpair backs the channel, the app gets one end as a normal
+  CBL2CAPChannel, and the handler gets the other as an already-open
+  NSInputStream/NSOutputStream pair.
+* The provider is not involved at all, so the loop runs at memory speed instead
+  of through two JSON hops over the Unix socket.
+* Gated on a client-supplied configuration being active. In Passthrough mode a
+  real channel exists and a registered handler is ignored, so a loopback can
+  never quietly shadow the hardware the user switched to.
+* The handler runs off the delegate queue, so a handler that blocks on reads
+  cannot stall the didOpenL2CAPChannel: callback that just handed the app its
+  own end.
+
+This is what makes an app that cannot run its peripheral role in the Simulator
+at all — CBPeripheralManager is unavailable there — still able to exercise its
+own framing, chunking, and reassembly against real CoreBluetooth objects.
+
 2.4.0 (2026-08-06)
 ------------------
 

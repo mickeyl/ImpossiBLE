@@ -1,5 +1,6 @@
 #import "CBSProxies.h"
 #import "CBSConnection.h"
+#import "CBSMock.h"
 #import <objc/message.h>
 
 #if TARGET_OS_SIMULATOR
@@ -169,6 +170,9 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
 }
 
 - (void)openL2CAPChannel:(CBL2CAPPSM)PSM {
+    // A client-supplied mock can answer this in-process; everything else goes
+    // to the provider as before.
+    if (cbs_try_local_l2cap(self, PSM)) return;
     CBSConnectionSend(@{@"type": @"openL2CAP", @"id": _shimIdentifier.UUIDString, @"psm": @(PSM)});
 }
 

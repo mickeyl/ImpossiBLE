@@ -4,6 +4,7 @@
 #import <objc/message.h>
 #import "CBSConnection.h"
 #import "CBSProxies.h"
+#import "CBSMock.h"
 
 #if TARGET_OS_SIMULATOR
 
@@ -69,6 +70,14 @@ static dispatch_queue_t cbs_callback_queue_for_central(CBCentralManager *central
     dispatch_queue_t queue = objc_getAssociatedObject(central, kCBSDelegateQueueKey);
     return queue ?: dispatch_get_main_queue();
 }
+
+/// Serves an L2CAP channel entirely inside this process.
+///
+/// The provider is not involved at all. A `socketpair` already backs every
+/// channel here — the only difference is that the far end is handed to the app
+/// instead of being forwarded over the Unix socket, which also means the loop
+/// runs at memory speed rather than through two JSON hops.
+BOOL cbs_try_local_l2cap(CBSPeripheral *peripheral, CBL2CAPPSM psm);
 
 static dispatch_queue_t cbs_callback_queue_for_peripheral(CBSPeripheral *peripheral) {
     CBCentralManager *owner = cbs_owner_central_for_peripheral(peripheral.identifier);
@@ -1404,6 +1413,14 @@ static void cbs_handle_message(NSDictionary *msg) {
         return;
     }
 
+    if ([type isEqualToString:@"didSetMockConfiguration"]) {
+        // The provider confirmed it is serving our devices, which is the
+        // precondition for answering L2CAP locally.
+        id ok = msg[@"ok"];
+        CBSMockSetConfigurationActive([ok respondsToSelector:@selector(boolValue)] && [ok boolValue]);
+        return;
+    }
+
     if ([type isEqualToString:@"didModifyServices"]) {
         NSString *uuidStr = msg[@"id"];
         NSArray *serviceIds = msg[@"serviceIds"];
@@ -1906,5 +1923,67 @@ static void cbs_swizzle_class(Class cls, SEL sel, IMP imp, IMP *orig_out) {
 }
 
 @end
+
+#pragma mark - Local (loopback) L2CAP
+
+BOOL cbs_try_local_l2cap(CBSPeripheral *peripheral, CBL2CAPPSM psm)
+{
+    ImpossiBLEL2CAPPeerHandler handler = CBSMockL2CAPHandler();
+    if (!handler || !CBSMockConfigurationActive()) return NO;
+
+    id<CBPeripheralDelegate> delegate = peripheral.delegate;
+    if (!delegate || ![delegate respondsToSelector:@selector(peripheral:didOpenL2CAPChannel:error:)]) {
+        return NO;
+    }
+
+    int fds[2] = {-1, -1};
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) return NO;
+
+    CFReadStreamRef appRead = NULL, peerRead = NULL;
+    CFWriteStreamRef appWrite = NULL, peerWrite = NULL;
+    CFStreamCreatePairWithSocket(kCFAllocatorDefault, fds[0], &appRead, &appWrite);
+    CFStreamCreatePairWithSocket(kCFAllocatorDefault, fds[1], &peerRead, &peerWrite);
+
+    NSInputStream *appIn = appRead ? (__bridge_transfer NSInputStream *)appRead : nil;
+    NSOutputStream *appOut = appWrite ? (__bridge_transfer NSOutputStream *)appWrite : nil;
+    NSInputStream *peerIn = peerRead ? (__bridge_transfer NSInputStream *)peerRead : nil;
+    NSOutputStream *peerOut = peerWrite ? (__bridge_transfer NSOutputStream *)peerWrite : nil;
+
+    if (!appIn || !appOut || !peerIn || !peerOut) {
+        if (fds[0] >= 0) close(fds[0]);
+        if (fds[1] >= 0) close(fds[1]);
+        return NO;
+    }
+
+    // Without this the descriptors outlive the streams and the channel never
+    // reports end-of-stream when the other side closes.
+    for (NSStream *stream in @[appIn, appOut, peerIn, peerOut]) {
+        [stream setProperty:@YES forKey:(__bridge NSString *)kCFStreamPropertyShouldCloseNativeSocket];
+        [stream open];
+    }
+
+    NSString *chanId = [NSString stringWithFormat:@"local-l2cap-%@", NSUUID.UUID.UUIDString];
+    CBSChannel *channel = [[CBSChannel alloc] initWithId:chanId
+                                                     psm:psm
+                                             inputStream:appIn
+                                            outputStream:appOut
+                                                    peer:(CBPeer *)peripheral];
+    if (!gL2CAPChannels) gL2CAPChannels = [NSMutableDictionary dictionary];
+    gL2CAPChannels[chanId] = channel;
+
+    CBL2CAPChannel *cbChannel = (CBL2CAPChannel *)channel;
+    dispatch_async(cbs_callback_queue_for_peripheral(peripheral), ^{
+        [delegate peripheral:(CBPeripheral *)peripheral didOpenL2CAPChannel:cbChannel error:nil];
+    });
+
+    // The peer side runs off the delegate queue: a handler that blocks reading
+    // must not stall the callback that just handed the app its own end.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        handler(psm, peerIn, peerOut);
+    });
+
+    NSLog(@"ImpossiBLE: serving L2CAP PSM %u locally", (unsigned)psm);
+    return YES;
+}
 
 #endif

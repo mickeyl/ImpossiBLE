@@ -1,9 +1,22 @@
 #import "include/ImpossiBLE.h"
 #import "CBSConnection.h"
+#import "CBSMock.h"
 
 #if TARGET_OS_SIMULATOR
 
 static BOOL CBSWaitForProvider(NSTimeInterval timeout);
+
+static ImpossiBLEL2CAPPeerHandler gL2CAPHandler = nil;
+static BOOL gClientConfigurationActive = NO;
+
+ImpossiBLEL2CAPPeerHandler CBSMockL2CAPHandler(void) { return gL2CAPHandler; }
+BOOL CBSMockConfigurationActive(void) { return gClientConfigurationActive; }
+void CBSMockSetConfigurationActive(BOOL active) { gClientConfigurationActive = active; }
+
+void ImpossiBLESetMockL2CAPHandler(ImpossiBLEL2CAPPeerHandler handler)
+{
+    gL2CAPHandler = [handler copy];
+}
 
 BOOL ImpossiBLESetMockConfiguration(NSData *configurationJSON)
 {
@@ -31,11 +44,13 @@ BOOL ImpossiBLESetMockConfiguration(NSData *configurationJSON)
         @"type": @"setMockConfiguration",
         @"configuration": configuration,
     });
+    gClientConfigurationActive = YES;
     return YES;
 }
 
 void ImpossiBLEClearMockConfiguration(void)
 {
+    gClientConfigurationActive = NO;
     if (!CBSConnectionIsConnected()) return;
     CBSConnectionSend(@{ @"type": @"clearMockConfiguration" });
 }
@@ -69,5 +84,6 @@ static BOOL CBSWaitForProvider(NSTimeInterval timeout)
 BOOL ImpossiBLESetMockConfiguration(NSData *configurationJSON) { return NO; }
 void ImpossiBLEClearMockConfiguration(void) {}
 BOOL ImpossiBLEIsProviderConnected(void) { return NO; }
+void ImpossiBLESetMockL2CAPHandler(ImpossiBLEL2CAPPeerHandler handler) {}
 
 #endif
