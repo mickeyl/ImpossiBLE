@@ -1,6 +1,16 @@
 ImpossiBLE ChangeLog
 ====================
 
+2.6.0 (2026-08-14)
+------------------
+
+Fix Command-drag repositioning of the menu bar icon.
+
+The status item's click monitor swallowed every mouse-down on the button,
+including Command-held ones, before AppKit's built-in Command-drag
+repositioning logic ever saw the event. Command-held clicks now pass through
+to the button untouched, restoring the ability to reposition the icon.
+
 2.5.0 (2026-08-06)
 ------------------
 
