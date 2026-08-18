@@ -4,27 +4,25 @@ import Foundation
 ///
 /// The UI binds to `mode` so the picker reflects the user's choice immediately,
 /// rather than inferring it from the live — and, mid-transition, briefly
-/// inconsistent — state of the mock server and the passthrough helper. Without
-/// this, a slow daemon launch would make the segmented control snap back to the
-/// previous mode until the next status poll caught up.
+/// inconsistent — state of the server. Without this, a slow transition would
+/// make the segmented control snap back to the previous mode until the next
+/// status update caught up.
 ///
 /// Transitions are serialized: while one is in flight, only the most recent
 /// requested mode is remembered and applied once the current transition
 /// finishes, so rapid clicks converge on the last choice instead of racing.
 ///
-/// Mutations happen on the main thread (the SwiftUI caller and the server /
-/// forwarder completion handlers all hop to main), mirroring `ForwarderController`.
+/// Mutations happen on the main thread (the SwiftUI caller and the server
+/// completion handlers all hop to main).
 final class ProviderModeController: ObservableObject {
     @Published private(set) var mode: MockProviderMode
     @Published private(set) var isSwitching = false
 
     private let server: MockServer
-    private let forwarder: ForwarderController
     private var queuedMode: MockProviderMode?
 
-    init(server: MockServer, forwarder: ForwarderController) {
+    init(server: MockServer) {
         self.server = server
-        self.forwarder = forwarder
         self.mode = MockProviderMode.persisted
         applyTransition(to: mode)
     }
@@ -54,19 +52,19 @@ final class ProviderModeController: ObservableObject {
         }
     }
 
+    // Mode switches always bounce through a stop so a connected client
+    // observes a disconnect instead of silently changing provider behavior.
     private func runTransition(to target: MockProviderMode, completion: @escaping () -> Void) {
         switch target {
             case .off:
-                server.stop {
-                    self.forwarder.stop(completion: completion)
-                }
+                server.stop(completion: completion)
             case .mock:
-                forwarder.stop {
-                    self.server.start(completion: completion)
+                server.stop {
+                    self.server.start(mode: .mock, completion: completion)
                 }
             case .passthrough:
                 server.stop {
-                    self.forwarder.start(completion: completion)
+                    self.server.start(mode: .passthrough, completion: completion)
                 }
         }
     }

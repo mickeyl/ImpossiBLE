@@ -1,6 +1,46 @@
 ImpossiBLE ChangeLog
 ====================
 
+3.0.0 (2026-08-18)
+------------------
+
+One provider process: the helper daemon is folded into the mock app.
+
+ImpossiBLE used to be three programs — the simulator library, the mock menu
+bar app, and impossible-helper, a separate daemon that owned Passthrough mode
+and that the mock app merely supervised (start, stop, mutual exclusion). The
+daemon never earned its keep: Mock and Passthrough are mutually exclusive by
+construction, and macOS CoreBluetooth needs no crash isolation from the UI.
+The mock app is now the single provider owning /tmp/impossible.sock in both
+modes. The wire format is unchanged; existing client libraries keep working.
+
+* The helper's CoreBluetooth translation layer lives on as
+  CBSPassthroughBridge in a new ImpossiBLEPassthroughCore target — the same
+  code minus its socket server. MockServer routes messages to it in
+  Passthrough mode and answers from mock data in Mock mode.
+* The supervision apparatus is gone: ForwarderController, pgrep/LaunchServices
+  mutual exclusion, the "Keep Helper on Quit" toggle, and the
+  /tmp/impossible-passthrough-activity.json snapshot file (activity now flows
+  in process). The socket can no longer be stolen by a stale helper.
+* Capture runs entirely in process on its own CBCentralManager and no longer
+  stops or restarts whatever mode is serving the simulator.
+* Takeover semantics changed to last-connection-wins (aligned with
+  CAMouflage): a freshly launched simulator app takes over the provider; the
+  previous client is disconnected and torn down instead of the newcomer being
+  rejected. Relaunching the app or switching simulators now "just works".
+* New hello handshake: the library reports its version, bundle id, and pid on
+  connect; the panel shows them next to the connected client, making version
+  skew between library and provider visible instead of silent.
+* The mock app now carries the Bluetooth usage description and — for Hardened
+  Runtime release builds — the com.apple.security.device.bluetooth
+  entitlement. First Passthrough activation prompts for Bluetooth consent.
+* Makefile: all helper targets removed; `make install`/`make mock-run` install
+  and start only the mock app. `make uninstall` also removes a previously
+  installed impossible-helper. New mock-status and mock-log targets.
+
+This is the first step of the Simsalabim consolidation plan (see
+PLAN-SIMSALABIM.md in the parent repo collection).
+
 2.6.0 (2026-08-14)
 ------------------
 

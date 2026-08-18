@@ -6,11 +6,20 @@ let package = Package(
     platforms: [.macOS("15.0")],
     dependencies: [],
     targets: [
+        .target(
+            name: "ImpossiBLEPassthroughCore",
+            path: "PassthroughCore",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedFramework("CoreBluetooth"),
+            ]
+        ),
         .executableTarget(
             name: "ImpossiBLE-Mock",
-            dependencies: [],
+            dependencies: ["ImpossiBLEPassthroughCore"],
             path: ".",
             exclude: [
+                "PassthroughCore",
                 "Resources/Info.plist",
                 "Resources/entitlements.plist",
                 "Resources/bluetooth.svg.png"
@@ -25,7 +34,7 @@ let package = Package(
                 "StatusBarController.swift",
                 "Server/MockServer.swift",
                 "Server/CaptureSession.swift",
-                "Server/ForwarderController.swift",
+                "Server/PassthroughActivity.swift",
                 "Server/ProviderModeController.swift",
                 "Views/CaptureSheet.swift",
                 "Views/DescriptorEditorView.swift",

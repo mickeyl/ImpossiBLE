@@ -1,30 +1,26 @@
-#import <Foundation/Foundation.h>
+#import "include/CBSPassthroughBridge.h"
 #import <CoreBluetooth/CoreBluetooth.h>
 #import <objc/runtime.h>
-#import <sys/socket.h>
-#import <sys/un.h>
-#import <signal.h>
-#import <unistd.h>
-#import <libproc.h>
 #import <stdlib.h>
 #import <string.h>
+#import <unistd.h>
 
-static const char *kCBSSocketPath = "/tmp/impossible.sock";
-static const char *kCBSActivityPath = "/tmp/impossible-passthrough-activity.json";
-static const char *kCBSDebugSentinelPath = "/tmp/impossible-helper.debug";
 static void *kCBSServiceIdKey = &kCBSServiceIdKey;
 static void *kCBSCharacteristicIdKey = &kCBSCharacteristicIdKey;
 static void *kCBSDescriptorIdKey = &kCBSDescriptorIdKey;
 
+static const char *kCBSDebugSentinelPath = "/tmp/impossible-passthrough.debug";
+
 // Verbose tracing, off by default. Enabled for the lifetime of the process if
-// either IMPOSSIBLE_HELPER_DEBUG is set (works when the binary is launched
-// directly) or /tmp/impossible-helper.debug exists (works for the `open`/launchd
-// launch path, where env vars don't propagate). Toggle, then restart the helper.
+// either IMPOSSIBLE_PASSTHROUGH_DEBUG is set (works when the binary is launched
+// directly) or /tmp/impossible-passthrough.debug exists (works for the
+// `open`/launchd launch path, where env vars don't propagate). Toggle, then
+// restart the mock app.
 static BOOL CBSDebugEnabled(void) {
     static BOOL enabled = NO;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        const char *env = getenv("IMPOSSIBLE_HELPER_DEBUG");
+        const char *env = getenv("IMPOSSIBLE_PASSTHROUGH_DEBUG");
         if (env && env[0] != '\0' && strcmp(env, "0") != 0) {
             enabled = YES;
         } else if (access(kCBSDebugSentinelPath, F_OK) == 0) {
@@ -35,7 +31,7 @@ static BOOL CBSDebugEnabled(void) {
 }
 
 #define CBSDebugLog(fmt, ...) \
-    do { if (CBSDebugEnabled()) NSLog(@"DEBUG: ImpossiBLE-Helper: " fmt, ##__VA_ARGS__); } while (0)
+    do { if (CBSDebugEnabled()) NSLog(@"DEBUG: ImpossiBLE-Passthrough: " fmt, ##__VA_ARGS__); } while (0)
 
 static NSString *CBSStreamEventName(NSStreamEvent event) {
     switch (event) {
@@ -49,10 +45,10 @@ static NSString *CBSStreamEventName(NSStreamEvent event) {
     }
 }
 
-@interface CBSHelper : NSObject <CBCentralManagerDelegate, CBPeripheralDelegate, NSStreamDelegate>
+@interface CBSPassthroughBridge () <CBCentralManagerDelegate, CBPeripheralDelegate, NSStreamDelegate>
 @property(nonatomic, strong) CBCentralManager *central;
 @property(nonatomic, strong) dispatch_queue_t cbQueue;
-@property(nonatomic, strong) dispatch_queue_t ioQueue;
+@property(nonatomic, strong) dispatch_queue_t outQueue;
 @property(nonatomic, strong) NSMutableDictionary<NSUUID *, CBPeripheral *> *peripherals;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, CBService *> *servicesById;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, CBCharacteristic *> *characteristicsById;
@@ -61,45 +57,19 @@ static NSString *CBSStreamEventName(NSStreamEvent event) {
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *streamToL2capId;
 @property(nonatomic, strong) NSMutableDictionary<NSUUID *, dispatch_source_t> *pendingL2capOpenTimers;
 @property(nonatomic, strong) NSMutableDictionary<NSUUID *, NSSet<CBUUID *> *> *pendingServiceFilters;
-@property(nonatomic, strong) NSMutableDictionary<NSString *, NSMutableDictionary *> *activityByPeripheralId;
 @property(nonatomic, strong) NSArray<CBUUID *> *pendingServices;
 @property(nonatomic, strong) NSDictionary *pendingOptions;
 @property(nonatomic, strong) NSMutableSet<NSUUID *> *seenScanPeripherals;
 @property(nonatomic, assign) BOOL scanShouldDeduplicate;
-@property(nonatomic, assign) int clientFd;
-@property(nonatomic, assign) uint64_t clientGeneration;
-@property(nonatomic, assign) pid_t clientPid;
-@property(nonatomic, copy) NSString *clientProcessName;
 @end
 
-@implementation CBSHelper
-
-static pid_t CBSPeerPIDForFd(int fd) {
-    pid_t pid = 0;
-    socklen_t len = sizeof(pid);
-    if (getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &len) != 0) {
-        return 0;
-    }
-    return pid;
-}
-
-static NSString *CBSProcessNameForPID(pid_t pid) {
-    if (pid <= 0) {
-        return @"unknown";
-    }
-    char name[PROC_PIDPATHINFO_MAXSIZE] = {0};
-    int result = proc_name(pid, name, sizeof(name));
-    if (result <= 0 || name[0] == '\0') {
-        return @"unknown";
-    }
-    return [NSString stringWithUTF8String:name] ?: @"unknown";
-}
+@implementation CBSPassthroughBridge
 
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _cbQueue = dispatch_queue_create("impossible.cb", DISPATCH_QUEUE_SERIAL);
-        _ioQueue = dispatch_queue_create("impossible.io", DISPATCH_QUEUE_SERIAL);
+        _cbQueue = dispatch_queue_create("impossible.passthrough.cb", DISPATCH_QUEUE_SERIAL);
+        _outQueue = dispatch_queue_create("impossible.passthrough.out", DISPATCH_QUEUE_SERIAL);
         _central = [[CBCentralManager alloc] initWithDelegate:self queue:_cbQueue options:nil];
         _peripherals = [NSMutableDictionary dictionary];
         _servicesById = [NSMutableDictionary dictionary];
@@ -109,11 +79,8 @@ static NSString *CBSProcessNameForPID(pid_t pid) {
         _streamToL2capId = [NSMutableDictionary dictionary];
         _pendingL2capOpenTimers = [NSMutableDictionary dictionary];
         _pendingServiceFilters = [NSMutableDictionary dictionary];
-        _activityByPeripheralId = [NSMutableDictionary dictionary];
         _seenScanPeripherals = [NSMutableSet set];
         _scanShouldDeduplicate = YES;
-        _clientFd = -1;
-        _clientPid = 0;
     }
     return self;
 }
@@ -151,128 +118,11 @@ static NSString *CBSProcessNameForPID(pid_t pid) {
     return normalized;
 }
 
-- (void)start {
-    [self resetActivitySnapshot];
-    [self startSocketServer];
-}
-
-- (void)startSocketServer {
-    int serverFd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (serverFd < 0) {
-        perror("socket");
-        return;
-    }
-
-    unlink(kCBSSocketPath);
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, kCBSSocketPath, sizeof(addr.sun_path) - 1);
-
-    if (bind(serverFd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        perror("bind");
-        close(serverFd);
-        return;
-    }
-    if (listen(serverFd, 1) != 0) {
-        perror("listen");
-        close(serverFd);
-        return;
-    }
-
-    NSLog(@"ImpossiBLE-Helper: listening on %s", kCBSSocketPath);
-
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        while (1) {
-            int client = accept(serverFd, NULL, NULL);
-            if (client < 0) {
-                perror("accept");
-                continue;
-            }
-            dispatch_async(self.ioQueue, ^{
-                if (self.clientFd >= 0) {
-                    NSLog(@"ImpossiBLE-Helper: rejecting additional client; active client pid=%d process=%@",
-                          self.clientPid,
-                          self.clientProcessName ?: @"unknown");
-                    [self sendConnectionRejectedToFd:client];
-                    close(client);
-                    return;
-                }
-                pid_t pid = CBSPeerPIDForFd(client);
-                self.clientPid = pid;
-                self.clientProcessName = CBSProcessNameForPID(pid);
-                NSLog(@"ImpossiBLE-Helper: client connected pid=%d process=%@",
-                      self.clientPid,
-                      self.clientProcessName ?: @"unknown");
-                self.clientFd = client;
-                self.clientGeneration += 1;
-                [self resetActivitySnapshot];
-                uint64_t generation = self.clientGeneration;
-                [self startReaderForClient:client generation:generation];
-            });
-        }
-    });
-}
-
-- (void)startReaderForClient:(int)fd generation:(uint64_t)generation {
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSMutableData *buffer = [NSMutableData data];
-        while (1) {
-            uint8_t tmp[2048];
-            ssize_t n = read(fd, tmp, sizeof(tmp));
-            if (n <= 0) {
-                dispatch_async(self.ioQueue, ^{
-                    NSLog(@"ImpossiBLE-Helper: client disconnected");
-                    [self handleClientDisconnectLockedForFd:fd generation:generation];
-                });
-                break;
-            }
-            [buffer appendBytes:tmp length:(NSUInteger)n];
-            while (1) {
-                const uint8_t *bytes = buffer.bytes;
-                NSUInteger len = buffer.length;
-                NSUInteger idx = NSNotFound;
-                for (NSUInteger i = 0; i < len; i++) {
-                    if (bytes[i] == '\n') {
-                        idx = i;
-                        break;
-                    }
-                }
-                if (idx == NSNotFound) {
-                    break;
-                }
-                NSData *line = [buffer subdataWithRange:NSMakeRange(0, idx)];
-                [buffer replaceBytesInRange:NSMakeRange(0, idx + 1) withBytes:NULL length:0];
-                [self handleMessageLine:line];
-            }
-        }
-    });
-}
-
-- (void)handleClientDisconnectForFd:(int)fd generation:(uint64_t)generation {
-    dispatch_async(self.ioQueue, ^{
-        [self handleClientDisconnectLockedForFd:fd generation:generation];
-    });
-}
-
-- (void)handleClientDisconnectLockedForFd:(int)fd generation:(uint64_t)generation {
-    if (fd < 0) {
-        return;
-    }
-    if (generation != self.clientGeneration || fd != self.clientFd) {
-        CBSDebugLog(@"ignoring stale disconnect fd=%d gen=%llu (current fd=%d gen=%llu)",
-                    fd, generation, self.clientFd, self.clientGeneration);
-        return;
-    }
-    self.clientFd = -1;
-    self.clientPid = 0;
-    self.clientProcessName = nil;
-    close(fd);
-
+- (void)reset {
     NSArray<CBPeripheral *> *peripherals = [self.peripherals allValues];
     NSArray<CBL2CAPChannel *> *channels = [self.l2capById allValues];
-    CBSDebugLog(@"client disconnect fd=%d gen=%llu tearing down peripherals=%lu l2capChannels=%lu",
-                fd, generation, (unsigned long)peripherals.count, (unsigned long)channels.count);
+    CBSDebugLog(@"reset: tearing down peripherals=%lu l2capChannels=%lu",
+                (unsigned long)peripherals.count, (unsigned long)channels.count);
 
     [self.peripherals removeAllObjects];
     [self.servicesById removeAllObjects];
@@ -284,11 +134,11 @@ static NSString *CBSProcessNameForPID(pid_t pid) {
         dispatch_source_cancel(timer);
     }
     [self.pendingL2capOpenTimers removeAllObjects];
+    [self.pendingServiceFilters removeAllObjects];
     [self.seenScanPeripherals removeAllObjects];
     self.scanShouldDeduplicate = YES;
     self.pendingServices = nil;
     self.pendingOptions = nil;
-    [self resetActivitySnapshot];
 
     dispatch_async(self.cbQueue, ^{
         [self.central stopScan];
@@ -364,22 +214,14 @@ static NSString *CBSProcessNameForPID(pid_t pid) {
     dispatch_resume(timer);
 }
 
-- (void)resetActivitySnapshot {
-    @synchronized (self) {
-        [self.activityByPeripheralId removeAllObjects];
-        [self writeActivitySnapshotLocked];
-    }
-}
-
 - (void)recordActivityForPeripheral:(CBPeripheral *)peripheral
-                           operation:(NSString *)operation
-                              detail:(NSString *)detail {
+                          operation:(NSString *)operation
+                             detail:(NSString *)detail {
     if (!peripheral.identifier || operation.length == 0) {
         return;
     }
-    NSString *name = peripheral.name ?: @"";
     [self recordActivityForPeripheralId:peripheral.identifier.UUIDString
-                                   name:name
+                                   name:peripheral.name ?: @""
                               operation:operation
                                  detail:detail ?: @""];
 }
@@ -391,27 +233,13 @@ static NSString *CBSProcessNameForPID(pid_t pid) {
     if (peripheralId.length == 0 || operation.length == 0) {
         return;
     }
-
-    @synchronized (self) {
-        CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
-        NSMutableDictionary *entry = self.activityByPeripheralId[peripheralId];
-        if (!entry) {
-            entry = [NSMutableDictionary dictionary];
-            entry[@"count"] = @0;
-            self.activityByPeripheralId[peripheralId] = entry;
-        }
-
-        NSString *resolvedName = name.length > 0 ? name : (entry[@"name"] ?: @"");
-        entry[@"id"] = peripheralId;
-        entry[@"name"] = resolvedName ?: @"";
-        entry[@"lastOperation"] = operation;
-        entry[@"lastDetail"] = detail ?: @"";
-        entry[@"lastAt"] = @(now);
-        entry[@"activeUntil"] = @(now + 1.5);
-        entry[@"count"] = @([entry[@"count"] unsignedIntegerValue] + 1);
-
-        [self writeActivitySnapshotLocked];
+    void (^handler)(NSString *, NSString *, NSString *, NSString *) = self.activityHandler;
+    if (!handler) {
+        return;
     }
+    dispatch_async(self.outQueue, ^{
+        handler(peripheralId, name ?: @"", operation, detail ?: @"");
+    });
 }
 
 - (void)recordActivityForPeripheralIdString:(NSString *)uuidStr
@@ -436,59 +264,16 @@ static NSString *CBSProcessNameForPID(pid_t pid) {
     return parts.count > 0 ? parts[0] : nil;
 }
 
-- (void)writeActivitySnapshotLocked {
-    NSArray *devices = [[self.activityByPeripheralId allValues] sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
-        NSNumber *aLast = a[@"lastAt"] ?: @0;
-        NSNumber *bLast = b[@"lastAt"] ?: @0;
-        return [bLast compare:aLast];
-    }];
-
-    NSDictionary *snapshot = @{
-        @"updatedAt": @(CFAbsoluteTimeGetCurrent()),
-        @"client": self.clientPid > 0 ? @{
-            @"pid": @(self.clientPid),
-            @"processName": self.clientProcessName ?: @"unknown"
-        } : [NSNull null],
-        @"devices": devices ?: @[]
-    };
-    NSError *error = nil;
-    NSData *data = [NSJSONSerialization dataWithJSONObject:snapshot options:0 error:&error];
-    if (!data) {
-        NSLog(@"ImpossiBLE-Helper: failed to encode activity snapshot: %@", error.localizedDescription);
-        return;
-    }
-    NSString *path = [NSString stringWithUTF8String:kCBSActivityPath];
-    if (![data writeToFile:path options:NSDataWritingAtomic error:&error]) {
-        NSLog(@"ImpossiBLE-Helper: failed to write activity snapshot: %@", error.localizedDescription);
-    }
-}
-
-- (void)handleMessageLine:(NSData *)line {
-    if (line.length == 0) {
-        return;
-    }
-    NSError *error = nil;
-    id obj = [NSJSONSerialization JSONObjectWithData:line options:0 error:&error];
-    if (![obj isKindOfClass:[NSDictionary class]]) {
-        return;
-    }
-    NSDictionary *msg = (NSDictionary *)obj;
+- (void)handleMessage:(NSDictionary<NSString *, id> *)msg {
     NSString *type = msg[@"type"];
     if (![type isKindOfClass:[NSString class]]) {
         return;
     }
-    NSLog(@"ImpossiBLE-Helper: recv type=%@", type);
+    CBSDebugLog(@"recv type=%@", type);
 
     if ([type isEqualToString:@"registerForConnectionEvents"]) {
-        NSDictionary *options = msg[@"options"];
-        dispatch_async(self.cbQueue, ^{
-#if TARGET_OS_IOS
-            if (@available(iOS 13.0, *)) {
-                NSDictionary *eventOptions = [options isKindOfClass:[NSDictionary class]] ? options : nil;
-                [self.central registerForConnectionEventsWithOptions:eventOptions];
-            }
-#endif
-        });
+        // registerForConnectionEventsWithOptions: is not available in the macOS
+        // CoreBluetooth API surface — accepted and ignored, as the daemon did.
         return;
     }
 
@@ -895,64 +680,23 @@ static NSString *CBSProcessNameForPID(pid_t pid) {
         if (self.central.state == CBManagerStatePoweredOn) {
             NSArray<CBUUID *> *svc = services.count > 0 ? services : nil;
             [self.central scanForPeripheralsWithServices:svc options:options];
-            NSLog(@"ImpossiBLE-Helper: scanning (allowDuplicates=%@)",
-                  allowDuplicates ? @"YES" : @"NO");
+            CBSDebugLog(@"scanning (allowDuplicates=%@)", allowDuplicates ? @"YES" : @"NO");
         } else {
             self.pendingServices = services;
             self.pendingOptions = options;
-            NSLog(@"ImpossiBLE-Helper: deferring scan until powered on");
+            CBSDebugLog(@"deferring scan until powered on");
         }
     });
 }
 
 - (void)sendMessage:(NSDictionary *)msg {
-    dispatch_async(self.ioQueue, ^{
-        int fd = self.clientFd;
-        uint64_t generation = self.clientGeneration;
-        if (fd < 0) {
-            return;
-        }
-        NSError *error = nil;
-        NSData *data = [NSJSONSerialization dataWithJSONObject:msg options:0 error:&error];
-        if (!data) {
-            return;
-        }
-        if (![self writeAllToFd:fd bytes:data.bytes length:data.length]) {
-            CBSDebugLog(@"write to client failed (type=%@ len=%lu) errno=%d; disconnecting",
-                        msg[@"type"], (unsigned long)data.length, errno);
-            [self handleClientDisconnectLockedForFd:fd generation:generation];
-            return;
-        }
-        if (![self writeAllToFd:fd bytes:"\n" length:1]) {
-            CBSDebugLog(@"write newline to client failed (type=%@) errno=%d; disconnecting",
-                        msg[@"type"], errno);
-            [self handleClientDisconnectLockedForFd:fd generation:generation];
-            return;
-        }
-    });
-}
-
-- (void)sendConnectionRejectedToFd:(int)fd {
-    NSString *message = [NSString stringWithFormat:@"another ImpossiBLE client is already connected (pid=%d, process=%@)",
-                         self.clientPid,
-                         self.clientProcessName ?: @"unknown"];
-    NSDictionary *msg = @{
-        @"type": @"connectionRejected",
-        @"code": @"clientBusy",
-        @"message": message,
-        @"activeClient": @{
-            @"pid": @(self.clientPid),
-            @"processName": self.clientProcessName ?: @"unknown"
-        },
-        @"retry": @NO
-    };
-    NSError *error = nil;
-    NSData *data = [NSJSONSerialization dataWithJSONObject:msg options:0 error:&error];
-    if (!data) {
+    void (^handler)(NSDictionary<NSString *, id> *) = self.messageHandler;
+    if (!handler) {
         return;
     }
-    [self writeAllToFd:fd bytes:data.bytes length:data.length];
-    [self writeAllToFd:fd bytes:"\n" length:1];
+    dispatch_async(self.outQueue, ^{
+        handler(msg);
+    });
 }
 
 #pragma mark - Helpers
@@ -965,20 +709,6 @@ static NSString *CBSProcessNameForPID(pid_t pid) {
     for (NSString *key in keys) {
         [self.streamToL2capId removeObjectForKey:key];
     }
-}
-
-- (BOOL)writeAllToFd:(int)fd bytes:(const void *)bytes length:(size_t)length {
-    const uint8_t *ptr = (const uint8_t *)bytes;
-    size_t remaining = length;
-    while (remaining > 0) {
-        ssize_t n = write(fd, ptr, remaining);
-        if (n <= 0) {
-            return NO;
-        }
-        ptr += (size_t)n;
-        remaining -= (size_t)n;
-    }
-    return YES;
 }
 
 - (NSString *)serviceIdForPeripheral:(CBPeripheral *)peripheral service:(CBService *)service index:(NSUInteger)index {
@@ -1048,7 +778,7 @@ static NSString *CBSProcessNameForPID(pid_t pid) {
 #pragma mark - CBCentralManagerDelegate
 
 - (void)centralManagerDidUpdateState:(CBCentralManager *)central {
-    NSLog(@"ImpossiBLE-Helper: state = %ld", (long)central.state);
+    CBSDebugLog(@"central state = %ld", (long)central.state);
     if (central.state == CBManagerStatePoweredOn && self.pendingServices) {
         NSArray<CBUUID *> *services = self.pendingServices;
         NSDictionary *options = self.pendingOptions ?: @{};
@@ -1057,7 +787,7 @@ static NSString *CBSProcessNameForPID(pid_t pid) {
         self.scanShouldDeduplicate = ![options[CBCentralManagerScanOptionAllowDuplicatesKey] boolValue];
         [self.seenScanPeripherals removeAllObjects];
         [central scanForPeripheralsWithServices:(services.count > 0 ? services : nil) options:options];
-        NSLog(@"ImpossiBLE-Helper: deferred scan started");
+        CBSDebugLog(@"deferred scan started");
     }
 }
 
@@ -1637,16 +1367,3 @@ connectionEventDidOccur:(CBConnectionEvent)event
 }
 
 @end
-
-int main(int argc, const char *argv[]) {
-    @autoreleasepool {
-        signal(SIGPIPE, SIG_IGN);
-        NSLog(@"ImpossiBLE-Helper: starting");
-        NSLog(@"ImpossiBLE-Helper: debug logging %@ (toggle via env IMPOSSIBLE_HELPER_DEBUG or file %s)",
-              CBSDebugEnabled() ? @"ON" : @"off", kCBSDebugSentinelPath);
-        CBSHelper *helper = [[CBSHelper alloc] init];
-        [helper start];
-        [[NSRunLoop currentRunLoop] run];
-    }
-    return 0;
-}

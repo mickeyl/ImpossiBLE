@@ -1,7 +1,5 @@
 import Foundation
-import Darwin
-
-private let captureSocketPath = "/tmp/impossible.sock"
+import ImpossiBLEPassthroughCore
 
 struct CapturedDevice: Identifiable, Hashable {
     let id: String
@@ -55,12 +53,14 @@ struct CaptureInspectionProgress: Equatable {
     }
 }
 
+/// Scans and deep-inspects nearby BLE devices through its own in-process
+/// `CBSPassthroughBridge`. Because the bridge owns a dedicated
+/// `CBCentralManager`, capturing no longer needs to stop or restart whatever
+/// provider mode is currently serving the simulator.
 final class CaptureSession: ObservableObject {
     enum Status: Equatable {
         case idle
-        case connecting
         case scanning
-        case failed(String)
     }
 
     @Published private(set) var status: Status = .idle
@@ -69,9 +69,7 @@ final class CaptureSession: ObservableObject {
     @Published private(set) var inspectionProgress = CaptureInspectionProgress()
 
     private let queue = DispatchQueue(label: "impossible.capture.io")
-    private var fd: Int32 = -1
-    private var readSource: DispatchSourceRead?
-    private var readBuffer = Data()
+    private var bridge: CBSPassthroughBridge?
     private var devicesByID: [String: CapturedDevice] = [:]
     private var inspectionCompletion: (([MockDevice]) -> Void)?
     private var inspectionDevices: [CapturedDevice] = []
@@ -82,41 +80,28 @@ final class CaptureSession: ObservableObject {
     private var inspectionTimeoutID = 0
 
     var isRunning: Bool {
-        status == .connecting || status == .scanning
+        status == .scanning
     }
 
     var isInspecting: Bool {
         inspectionProgress.isActive
     }
 
-    deinit {
-        readSource?.cancel()
-        readSource = nil
-        if fd >= 0 {
-            close(fd)
-            fd = -1
-        }
-    }
-
     func start(serviceUUIDs: [String]) {
         queue.async { [self] in
-            guard fd < 0 else { return }
+            guard bridge == nil else { return }
             devicesByID.removeAll()
-            readBuffer.removeAll()
             DispatchQueue.main.async {
                 self.devices = []
-                self.status = .connecting
-                self.lastActivity = "Connecting to helper"
             }
 
-            let socket = connectWithRetry()
-            guard socket >= 0 else {
-                publishFailure("Could not connect to impossible-helper")
-                return
+            let bridge = CBSPassthroughBridge()
+            bridge.messageHandler = { [weak self] message in
+                self?.queue.async {
+                    self?.handleMessage(message)
+                }
             }
-
-            fd = socket
-            startReader(fd: socket)
+            self.bridge = bridge
             send([
                 "type": "scan",
                 "services": serviceUUIDs,
@@ -136,19 +121,10 @@ final class CaptureSession: ObservableObject {
             inspectionCompletion = nil
             pendingInspection = nil
 
-            if fd >= 0 {
-                send(["type": "stopScan"])
-            }
+            send(["type": "stopScan"])
+            bridge?.reset()
+            bridge = nil
 
-            readSource?.cancel()
-            readSource = nil
-
-            if fd >= 0 {
-                close(fd)
-                fd = -1
-            }
-
-            readBuffer.removeAll()
             DispatchQueue.main.async {
                 if self.status != .idle {
                     self.status = .idle
@@ -161,7 +137,7 @@ final class CaptureSession: ObservableObject {
 
     func inspectDevices(_ devices: [CapturedDevice], completion: @escaping ([MockDevice]) -> Void) {
         queue.async { [self] in
-            guard fd >= 0 else {
+            guard bridge != nil else {
                 let fallback = devices.map { $0.makeMockDevice() }
                 DispatchQueue.main.async {
                     completion(fallback)
@@ -179,70 +155,6 @@ final class CaptureSession: ObservableObject {
             pendingInspection = nil
 
             inspectNextDevice()
-        }
-    }
-
-    private func connectWithRetry() -> Int32 {
-        for attempt in 0..<15 {
-            let socket = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-            if socket < 0 {
-                return -1
-            }
-
-            var addr = sockaddr_un()
-            addr.sun_family = sa_family_t(AF_UNIX)
-            let pathBytes = captureSocketPath.utf8CString
-            withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
-                let raw = UnsafeMutableRawPointer(ptr)
-                pathBytes.withUnsafeBufferPointer { buffer in
-                    raw.copyMemory(from: buffer.baseAddress!, byteCount: min(buffer.count, 104))
-                }
-            }
-
-            let result = withUnsafePointer(to: &addr) { pointer in
-                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
-                    Darwin.connect(socket, socketAddress, socklen_t(MemoryLayout<sockaddr_un>.size))
-                }
-            }
-
-            if result == 0 {
-                return socket
-            }
-
-            close(socket)
-            if attempt < 14 {
-                Thread.sleep(forTimeInterval: 0.2)
-            }
-        }
-        return -1
-    }
-
-    private func startReader(fd: Int32) {
-        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
-        source.setEventHandler { [weak self] in
-            self?.readFromHelper(fd: fd)
-        }
-        source.setCancelHandler { }
-        source.resume()
-        readSource = source
-    }
-
-    private func readFromHelper(fd: Int32) {
-        var buffer = [UInt8](repeating: 0, count: 2048)
-        let count = Darwin.read(fd, &buffer, buffer.count)
-        if count <= 0 {
-            handleDisconnect()
-            return
-        }
-
-        readBuffer.append(contentsOf: buffer[0..<count])
-        while let newlineIndex = readBuffer.firstIndex(of: UInt8(ascii: "\n")) {
-            let lineData = readBuffer[readBuffer.startIndex..<newlineIndex]
-            readBuffer.removeSubrange(readBuffer.startIndex...newlineIndex)
-            guard !lineData.isEmpty,
-                  let message = try? JSONSerialization.jsonObject(with: Data(lineData)) as? [String: Any]
-            else { continue }
-            handleMessage(message)
         }
     }
 
@@ -327,46 +239,7 @@ final class CaptureSession: ObservableObject {
     }
 
     private func send(_ message: [String: Any]) {
-        guard fd >= 0,
-              let data = try? JSONSerialization.data(withJSONObject: message)
-        else { return }
-
-        var payload = data
-        payload.append(UInt8(ascii: "\n"))
-        payload.withUnsafeBytes { pointer in
-            guard let baseAddress = pointer.baseAddress else { return }
-            var written = 0
-            while written < payload.count {
-                let count = Darwin.write(fd, baseAddress.advanced(by: written), payload.count - written)
-                if count <= 0 { break }
-                written += count
-            }
-        }
-    }
-
-    private func handleDisconnect() {
-        readSource?.cancel()
-        readSource = nil
-        if fd >= 0 {
-            close(fd)
-            fd = -1
-        }
-        if inspectionCompletion != nil {
-            finishInspectionWithRemainingAdvertisementOnly()
-        }
-        DispatchQueue.main.async {
-            if self.status == .scanning || self.status == .connecting {
-                self.status = .idle
-                self.lastActivity = "Helper disconnected"
-            }
-        }
-    }
-
-    private func publishFailure(_ message: String) {
-        DispatchQueue.main.async {
-            self.status = .failed(message)
-            self.lastActivity = message
-        }
+        bridge?.handleMessage(message)
     }
 
     private static func isMoreInteresting(_ lhs: CapturedDevice, _ rhs: CapturedDevice) -> Bool {
@@ -703,15 +576,6 @@ private extension CaptureSession {
             self.inspectionProgress = CaptureInspectionProgress()
             completion?(results)
         }
-    }
-
-    func finishInspectionWithRemainingAdvertisementOnly() {
-        cancelInspectionTimeout()
-        if inspectionIndex < inspectionDevices.count {
-            let remaining = inspectionDevices[inspectionIndex...].map { $0.makeMockDevice() }
-            inspectionResults.append(contentsOf: remaining)
-        }
-        finishInspection()
     }
 
     func handleInspectionTimeout() {

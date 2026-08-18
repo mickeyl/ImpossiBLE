@@ -4,7 +4,7 @@ import AppKit
 struct MockMenuContent: View {
     @ObservedObject var store: MockStore
     @ObservedObject var server: MockServer
-    @ObservedObject var forwarder: ForwarderController
+    @ObservedObject var activity: PassthroughActivityMonitor
     @ObservedObject var controller: ProviderModeController
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
@@ -15,7 +15,6 @@ struct MockMenuContent: View {
     @State private var saveConfigName = ""
     @State private var showSaveField = false
     @AppStorage(AppPreferences.dismissControlWindowOnDeactivateKey) private var dismissOnDeactivate = false
-    @AppStorage(AppPreferences.keepHelperRunningOnQuitKey) private var keepHelperRunningOnQuit = false
     // Launch-at-login lives in a launchd plist, not UserDefaults. Mirror it in
     // view state so the toggle reflects taps immediately instead of re-reading
     // the (non-observable) filesystem.
@@ -198,9 +197,6 @@ struct MockMenuContent: View {
             modeStatusDetail
         }
         .padding(12)
-        .onAppear {
-            forwarder.refresh()
-        }
     }
 
     private var appVersion: String {
@@ -223,14 +219,12 @@ struct MockMenuContent: View {
         switch currentMode {
             case .off:
                 .secondary
-            case .mock:
+            case .mock, .passthrough:
                 switch server.status {
                     case .stopped:         .secondary
                     case .listening:       .blue
                     case .clientConnected: .green
                 }
-            case .passthrough:
-                forwarderStatusColor
         }
     }
 
@@ -255,7 +249,7 @@ struct MockMenuContent: View {
             case .mock:
                 "antenna.radiowaves.left.and.right.circle"
             case .passthrough:
-                forwarder.trafficActive ? "bolt.horizontal.circle.fill" : "antenna.radiowaves.left.and.right.circle"
+                activity.trafficActive ? "bolt.horizontal.circle.fill" : "antenna.radiowaves.left.and.right.circle"
         }
     }
 
@@ -263,10 +257,8 @@ struct MockMenuContent: View {
         switch currentMode {
             case .off:
                 "Off"
-            case .mock:
+            case .mock, .passthrough:
                 statusText
-            case .passthrough:
-                forwarderStatusText
         }
     }
 
@@ -279,58 +271,23 @@ struct MockMenuContent: View {
                 return "\(deviceSummary) · \(server.lastActivity)"
             case .passthrough:
                 let summary = passthroughDetailText
-                guard !forwarder.lastActivity.isEmpty else { return summary }
-                return "\(summary) · \(forwarder.lastActivity)"
+                guard !activity.lastActivity.isEmpty else { return summary }
+                return "\(summary) · \(activity.lastActivity)"
         }
     }
 
     private var providerClient: SocketClientInfo? {
-        switch currentMode {
-            case .off:
-                nil
-            case .mock:
-                server.connectedClient
-            case .passthrough:
-                forwarder.connectedClient
-        }
+        currentMode == .off ? nil : server.connectedClient
     }
 
     private func terminateProviderClient() {
-        switch currentMode {
-            case .off:
-                break
-            case .mock:
-                server.terminateConnectedClient()
-            case .passthrough:
-                forwarder.terminateConnectedClient()
-        }
-    }
-
-    private var forwarderStatusColor: Color {
-        switch forwarder.status {
-            case .unknown:          .secondary
-            case .stopped:          .secondary
-            case .running:          .green
-            case .unavailable:      .orange
-        }
-    }
-
-    private var forwarderStatusText: String {
-        switch forwarder.status {
-            case .unknown:
-                "Checking..."
-            case .stopped:
-                "Stopped"
-            case .running(let pids):
-                pids.count == 1 ? "Running (PID \(pids[0]))" : "Running (\(pids.count) processes)"
-            case .unavailable(let message):
-                message
-        }
+        guard currentMode != .off else { return }
+        server.terminateConnectedClient()
     }
 
     private var passthroughDetailText: String {
-        guard forwarder.isRunning else { return "No passthrough provider running" }
-        let devices = forwarder.passthroughDevices
+        guard server.status != .stopped else { return "No passthrough provider running" }
+        let devices = activity.devices
         let activeCount = devices.filter(\.isActive).count
         if activeCount > 0 {
             let deviceWord = activeCount == 1 ? "device" : "devices"
@@ -384,7 +341,7 @@ struct MockMenuContent: View {
                 .font(.caption)
                 .buttonStyle(.borderless)
                 .help("Capture nearby BLE devices")
-                .disabled(controller.isSwitching || forwarder.isBusy || (!forwarder.canStart && !forwarder.isRunning))
+                .disabled(controller.isSwitching)
 
                 Button {
                     saveConfigName = store.activeConfigurationName
@@ -610,13 +567,7 @@ struct MockMenuContent: View {
 
     private var passthroughBody: some View {
         Group {
-            if let message = forwarder.activityUnavailableMessage {
-                passthroughPlaceholder(
-                    systemImage: "exclamationmark.triangle",
-                    tint: .orange.opacity(0.75),
-                    message: message
-                )
-            } else if forwarder.passthroughDevices.isEmpty {
+            if activity.devices.isEmpty {
                 passthroughPlaceholder(
                     systemImage: "antenna.radiowaves.left.and.right.slash",
                     tint: .secondary.opacity(0.35),
@@ -625,8 +576,8 @@ struct MockMenuContent: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 1) {
-                        ForEach(forwarder.passthroughDevices) { activity in
-                            PassthroughActivityRow(activity: activity)
+                        ForEach(activity.devices) { entry in
+                            PassthroughActivityRow(activity: entry)
                         }
                     }
                     .padding(.vertical, 4)
@@ -726,17 +677,6 @@ struct MockMenuContent: View {
                 acknowledge(newValue ? "Panel auto-hides" : "Panel stays open")
             }
 
-            if currentMode == .passthrough {
-                IconToggle(
-                    systemImage: "powerplug",
-                    help: "Keep the passthrough helper running in the background after you quit",
-                    isOn: $keepHelperRunningOnQuit
-                )
-                .onChange(of: keepHelperRunningOnQuit) { _, newValue in
-                    acknowledge(newValue ? "Helper kept on quit" : "Helper stops on quit")
-                }
-            }
-
             Spacer()
 
             if !settingsAck.isEmpty {
@@ -749,8 +689,8 @@ struct MockMenuContent: View {
 
             Spacer()
 
+            // The app delegate stops the server on any quit path.
             Button("Quit") {
-                server.stop()
                 NSApplication.shared.terminate(nil)
             }
             .font(.caption)
@@ -863,7 +803,8 @@ private struct ProviderStatusLine: View {
 
     private var clientText: String {
         guard let client else { return "No client" }
-        return "Client \(client.displayText)"
+        guard let version = client.libraryVersion else { return "Client \(client.displayText)" }
+        return "Client \(client.displayText) · lib \(version)"
     }
 }
 

@@ -1,26 +1,12 @@
-HELPER_SRC = Sources/Helper/CBSHelperMain.m
-HELPER_PLIST = Sources/Helper/Info.plist
-HELPER_ENTITLEMENTS = Sources/Helper/entitlements.plist
-APP_BUNDLE = impossible-helper.app
-APP_BIN = $(APP_BUNDLE)/Contents/MacOS/impossible-helper
 prefix ?= $(HOME)/.local
 INSTALL_DIR = $(prefix)/bin
-INSTALLED_APP = $(INSTALL_DIR)/impossible-helper.app
-HELPER_BIN_NAME = impossible-helper
-CODESIGN_MATCH ?= Developer ID Application
-SIGN_IDENTITY := $(shell security find-identity -v -p codesigning | awk -F'"' '/$(CODESIGN_MATCH)/ {print $$2; exit}')
-HELPER_CODESIGN_FLAGS ?= --options runtime --timestamp
-HELPER_DIST_ZIP = impossible-helper.zip
+NOTARY_PROFILE ?=
 
-CFLAGS ?= -O2
-CFLAGS_COMMON = -fobjc-arc
-FRAMEWORKS = -framework Foundation -framework CoreBluetooth
-
-# Mock app
+# Mock app (the single provider: mock + passthrough)
 MOCK_CODESIGN_MATCH ?= Developer ID Application
 MOCK_SIGN_IDENTITY := $(shell security find-identity -v -p codesigning | awk -F'"' '/$(MOCK_CODESIGN_MATCH)/ {print $$2; exit}')
 MOCK_CODESIGN_FLAGS ?= --options runtime --timestamp
-MOCK_SRCS = $(shell find Sources/MockApp -name '*.swift' 2>/dev/null)
+MOCK_SRCS = $(shell find Sources/MockApp \( -name '*.swift' -o -name '*.m' -o -name '*.h' \) -not -path '*/.build/*' 2>/dev/null)
 MOCK_PLIST = Sources/MockApp/Resources/Info.plist
 MOCK_ENTITLEMENTS = Sources/MockApp/Resources/entitlements.plist
 MOCK_BUNDLE = ImpossiBLE-Mock.app
@@ -29,7 +15,10 @@ MOCK_BIN_NAME = ImpossiBLE-Mock
 MOCK_FONT_RESOURCE = Sources/MockApp/Resources/fa-brands-400.ttf
 INSTALLED_MOCK_APP = $(INSTALL_DIR)/$(MOCK_BUNDLE)
 MOCK_DIST_ZIP = ImpossiBLE-Mock.zip
-NOTARY_PROFILE ?=
+
+# Legacy helper artifacts (pre-3.0), removed on uninstall
+LEGACY_HELPER_APP = $(INSTALL_DIR)/impossible-helper.app
+LEGACY_HELPER_WRAPPER = $(INSTALL_DIR)/impossible-helper
 
 # Monotonic build number derived from commit count; falls back to the
 # value already in the source Info.plist when the tree is not a git
@@ -38,84 +27,36 @@ BUILD_NUMBER := $(shell git rev-list --count HEAD 2>/dev/null)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help helper debug dev install uninstall clean run stop restart status log watch helper-assess helper-notarize \
-        mock mock-debug mock-dev mock-relaunch mock-install mock-run mock-stop mock-assess mock-notarize mock-clean
+.PHONY: help install uninstall clean \
+        mock mock-debug mock-dev mock-relaunch mock-install mock-run mock-stop mock-status mock-log mock-assess mock-notarize mock-clean
 
 help:
 	@echo "Usage: make <target>"
 	@echo ""
-	@echo "Helper (real BLE bridge):"
-	@echo "  helper      Build the helper app (release)"
-	@echo "  debug       Build the helper app with debug symbols"
-	@echo "  dev         Stop, debug-build, and run in foreground"
-	@echo "  run         Install and start (if not already running)"
-	@echo "  stop        Stop the running helper"
-	@echo "  restart     Install, stop, and restart the helper"
-	@echo "  status      Show whether the helper is running"
-	@echo "  log         Tail system log output from the helper"
-	@echo "  watch       Rebuild and restart on source changes (requires fswatch)"
-	@echo "  helper-assess Verify signing and Gatekeeper assessment"
-	@echo "  helper-notarize Notarize the helper app (requires NOTARY_PROFILE)"
-	@echo ""
-	@echo "Mock (virtual BLE devices):"
+	@echo "Mock app (virtual BLE devices + passthrough to real hardware):"
 	@echo "  mock        Build the mock menubar app (release)"
 	@echo "  mock-debug  Build with debug symbols"
 	@echo "  mock-dev    Stop, debug-build, and run in foreground"
-	@echo "  mock-relaunch  Quick helper/mock debug rebuild and background relaunch"
+	@echo "  mock-relaunch  Quick debug rebuild and background relaunch"
 	@echo "  mock-run    Install and start the mock app"
 	@echo "  mock-stop   Stop the running mock app"
+	@echo "  mock-status Show whether the mock app is running"
+	@echo "  mock-log    Tail system log output from the mock app"
 	@echo "  mock-assess Verify signing and Gatekeeper assessment"
 	@echo "  mock-notarize Notarize the mock app (requires NOTARY_PROFILE)"
 	@echo "  mock-clean  Remove mock build artifacts"
 	@echo ""
 	@echo "General:"
-	@echo "  install     Build and install both apps to \$$(prefix)/bin  [$(prefix)]"
+	@echo "  install     Build and install the mock app to \$$(prefix)/bin  [$(prefix)]"
 	@echo "  uninstall   Remove installed files from \$$(prefix)/bin"
 	@echo "  clean       Remove all build artifacts"
 	@echo ""
 	@echo "Variables:"
 	@echo "  prefix          Install prefix       [$(prefix)]"
-	@echo "  CODESIGN_MATCH  Signing identity      [$(CODESIGN_MATCH)]"
 	@echo "  MOCK_CODESIGN_MATCH  Mock signing identity [$(MOCK_CODESIGN_MATCH)]"
 	@echo "  NOTARY_PROFILE  notarytool profile    [$(NOTARY_PROFILE)]"
 
-helper: $(APP_BIN)
-
-debug: CFLAGS = -g -O0 -DDEBUG
-debug: $(APP_BIN)
-	@echo "Debug build complete. Run with:"
-	@echo "  $(APP_BIN)"
-
-dev: CFLAGS = -g -O0 -DDEBUG
-dev: clean $(APP_BIN)
-	@pkill -f "$(HELPER_BIN_NAME).app/Contents/MacOS" 2>/dev/null && sleep 0.5 || true
-	@echo "Starting in foreground… (^C to stop)"
-	$(APP_BIN)
-
-$(APP_BIN): $(HELPER_SRC) $(HELPER_PLIST) $(HELPER_ENTITLEMENTS)
-	mkdir -p $(APP_BUNDLE)/Contents/MacOS
-	cp $(HELPER_PLIST) $(APP_BUNDLE)/Contents/Info.plist
-	clang $(CFLAGS_COMMON) $(CFLAGS) $(FRAMEWORKS) \
-		-o $(APP_BIN) $(HELPER_SRC)
-	@if [ -z "$(SIGN_IDENTITY)" ]; then \
-		echo "WARNING: No codesigning identity matching '$(CODESIGN_MATCH)' found in your keychain."; \
-		echo "Signing the helper ad hoc. Gatekeeper will reject quarantined or distributed copies."; \
-		codesign --force --sign - --entitlements $(HELPER_ENTITLEMENTS) $(APP_BUNDLE); \
-	else \
-		echo "Codesigning helper with: $(SIGN_IDENTITY)"; \
-		codesign --force --sign "$(SIGN_IDENTITY)" $(HELPER_CODESIGN_FLAGS) --entitlements $(HELPER_ENTITLEMENTS) $(APP_BUNDLE); \
-	fi
-	@xattr -cr $(APP_BUNDLE) 2>/dev/null || true
-
-install: helper mock
-	mkdir -p $(INSTALL_DIR)
-	rm -rf $(INSTALLED_APP)
-	cp -R $(APP_BUNDLE) $(INSTALL_DIR)/
-	@xattr -cr $(INSTALLED_APP) 2>/dev/null || true
-	install -m 755 bin/impossible-helper $(INSTALL_DIR)/impossible-helper
-	rm -rf $(INSTALLED_MOCK_APP)
-	cp -R $(MOCK_BUNDLE) $(INSTALL_DIR)/
-	@xattr -cr $(INSTALLED_MOCK_APP) 2>/dev/null || true
+install: mock-install
 
 mock-install: mock
 	mkdir -p $(INSTALL_DIR)
@@ -124,82 +65,10 @@ mock-install: mock
 	@xattr -cr $(INSTALLED_MOCK_APP) 2>/dev/null || true
 
 uninstall:
-	rm -rf $(INSTALLED_APP)
-	rm -f $(INSTALL_DIR)/impossible-helper
 	rm -rf $(INSTALLED_MOCK_APP)
+	rm -rf $(LEGACY_HELPER_APP)
+	rm -f $(LEGACY_HELPER_WRAPPER)
 	@echo "Uninstalled from $(INSTALL_DIR)"
-
-restart: install
-	-pkill -f $(HELPER_BIN_NAME) 2>/dev/null; sleep 0.5
-	open "$(INSTALLED_APP)"
-	@echo "impossible-helper restarted"
-
-run: install
-	@if ! pgrep -f $(HELPER_BIN_NAME) > /dev/null 2>&1; then \
-		open "$(INSTALLED_APP)"; \
-		echo "impossible-helper started"; \
-	else \
-		echo "impossible-helper already running"; \
-	fi
-
-stop:
-	@pid=$$(pgrep -f "$(HELPER_BIN_NAME).app/Contents/MacOS" 2>/dev/null); \
-	if [ -n "$$pid" ]; then \
-		kill "$$pid"; \
-		echo "impossible-helper stopped (was PID $$pid)"; \
-	else \
-		echo "impossible-helper is not running"; \
-	fi
-
-status:
-	@pid=$$(pgrep -f "$(HELPER_BIN_NAME).app/Contents/MacOS" 2>/dev/null); \
-	if [ -n "$$pid" ]; then \
-		echo "impossible-helper is running (PID $$pid)"; \
-	else \
-		echo "impossible-helper is not running"; \
-	fi
-
-log:
-	@echo "Tailing logs for ImpossiBLE-Helper… (^C to stop)"
-	@log stream --predicate 'process == "impossible-helper"' --style compact
-
-helper-assess: helper
-	codesign --verify --deep --strict --verbose=4 $(APP_BUNDLE)
-	spctl -a -vvv -t exec $(APP_BUNDLE)
-
-helper-notarize:
-	@if [ -z "$(NOTARY_PROFILE)" ]; then \
-		echo "ERROR: Set NOTARY_PROFILE to a notarytool keychain profile."; \
-		echo "Example: xcrun notarytool store-credentials impossible-notary"; \
-		exit 1; \
-	fi
-	rm -rf $(APP_BUNDLE)
-	$(MAKE) helper
-	rm -f $(HELPER_DIST_ZIP)
-	ditto -c -k --keepParent --sequesterRsrc --zlibCompressionLevel 9 $(APP_BUNDLE) $(HELPER_DIST_ZIP)
-	xcrun notarytool submit $(HELPER_DIST_ZIP) --keychain-profile "$(NOTARY_PROFILE)" --wait
-	xcrun stapler staple $(APP_BUNDLE)
-	$(MAKE) helper-assess
-
-watch: install
-	@if ! pgrep -f $(HELPER_BIN_NAME) > /dev/null 2>&1; then \
-		open "$(INSTALLED_APP)"; \
-		echo "impossible-helper started"; \
-	else \
-		echo "impossible-helper already running"; \
-	fi
-	@echo "Watching for changes in Sources/Helper/…"
-	@fswatch -o Sources/Helper/ | while read _; do \
-		echo ""; \
-		echo "=== Source changed, rebuilding… ==="; \
-		if $(MAKE) install; then \
-			pkill -f $(HELPER_BIN_NAME) 2>/dev/null; sleep 0.5; \
-			open "$(INSTALLED_APP)"; \
-			echo "=== Restarted ==="; \
-		else \
-			echo "=== Build failed ==="; \
-		fi; \
-	done
 
 # ---- Mock App ----
 
@@ -220,7 +89,7 @@ mock-dev: mock-clean $(MOCK_BIN)
 	@echo "Starting in foreground… (^C to stop)"
 	$(MOCK_BIN)
 
-mock-relaunch: helper
+mock-relaunch:
 	@mkdir -p $(MOCK_BUNDLE)/Contents/MacOS
 	@mkdir -p $(MOCK_BUNDLE)/Contents/Resources
 	@cp $(MOCK_PLIST) $(MOCK_BUNDLE)/Contents/Info.plist
@@ -230,7 +99,6 @@ mock-relaunch: helper
 	@cp $(MOCK_FONT_RESOURCE) $(MOCK_BUNDLE)/Contents/Resources/
 	@codesign --force --sign - --entitlements $(MOCK_ENTITLEMENTS) $(MOCK_BUNDLE) >/dev/null
 	@xattr -cr $(MOCK_BUNDLE) 2>/dev/null || true
-	@pkill -f "$(HELPER_BIN_NAME).app/Contents/MacOS" 2>/dev/null && sleep 0.5 || true
 	@pkill -f "ImpossiBLE-Mock" 2>/dev/null && sleep 0.5 || true
 	@open "$(MOCK_BUNDLE)"
 	@echo "Mock app relaunched (debug build)"
@@ -270,6 +138,18 @@ mock-stop:
 		echo "impossible-mock is not running"; \
 	fi
 
+mock-status:
+	@pid=$$(pgrep -f "$(MOCK_BIN_NAME).app/Contents/MacOS" 2>/dev/null); \
+	if [ -n "$$pid" ]; then \
+		echo "impossible-mock is running (PID $$pid)"; \
+	else \
+		echo "impossible-mock is not running"; \
+	fi
+
+mock-log:
+	@echo "Tailing logs for ImpossiBLE-Mock… (^C to stop)"
+	@log stream --predicate 'process == "$(MOCK_BIN_NAME)"' --style compact
+
 mock-assess: mock
 	codesign --verify --deep --strict --verbose=4 $(MOCK_BUNDLE)
 	spctl -a -vvv -t exec $(MOCK_BUNDLE)
@@ -293,5 +173,5 @@ mock-clean:
 
 # ---- General ----
 
-clean:
-	rm -rf $(APP_BUNDLE) $(HELPER_DIST_ZIP) $(MOCK_BUNDLE) $(MOCK_DIST_ZIP)
+clean: mock-clean
+	rm -rf impossible-helper.app impossible-helper.zip

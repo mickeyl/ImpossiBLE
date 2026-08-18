@@ -1,10 +1,14 @@
 import Foundation
+import ImpossiBLEPassthroughCore
 
 private let kSocketPath = "/tmp/impossible.sock"
 
 struct SocketClientInfo: Equatable {
     let pid: pid_t
     let processName: String
+    /// Reported by the client's `hello` message; nil for pre-3.0 libraries.
+    var libraryVersion: String? = nil
+    var bundleId: String? = nil
 
     var displayText: String {
         "\(processName) (PID \(pid))"
@@ -32,13 +36,20 @@ struct ClientSuppliedConfiguration: Equatable {
     var sourceDescription: String { client?.displayText ?? "connected app" }
 }
 
-/// Socket server that implements the ImpossiBLE helper protocol with mock data.
+/// The single owner of `/tmp/impossible.sock`, serving the ImpossiBLE wire
+/// protocol in one of two modes: answering from mock data, or forwarding to
+/// real Mac Bluetooth hardware through the in-process `CBSPassthroughBridge`.
 /// All socket I/O runs on `ioQueue`. UI-facing state is published on the main thread.
 final class MockServer: ObservableObject {
     enum Status: Equatable, Sendable {
         case stopped
         case listening
         case clientConnected
+    }
+
+    enum ServeMode: Sendable {
+        case mock
+        case passthrough
     }
 
     @Published var status: Status = .stopped
@@ -73,20 +84,29 @@ final class MockServer: ObservableObject {
     /// memory only: it must never overwrite the user's saved configurations,
     /// and it dies with the connection that supplied it.
     private var clientSuppliedDevices: [MockDevice]?
+    private var serveMode: ServeMode = .mock
+    /// Created on first Passthrough start and kept for the process lifetime;
+    /// instantiating it triggers the one-time macOS Bluetooth consent prompt.
+    private var passthroughBridge: CBSPassthroughBridge?
 
     weak var store: MockStore?
+    let passthroughActivity = PassthroughActivityMonitor()
 
     private static let serverEnabledKey = "ServerEnabled"
 
     init(autoStart: Bool = true) {
         if autoStart, UserDefaults.standard.bool(forKey: Self.serverEnabledKey) {
-            start()
+            start(mode: .mock)
         }
     }
 
-    func start(completion: (() -> Void)? = nil) {
+    func start(mode: ServeMode, completion: (() -> Void)? = nil) {
         UserDefaults.standard.set(true, forKey: Self.serverEnabledKey)
         ioQueue.async { [self] in
+            serveMode = mode
+            if mode == .passthrough {
+                preparePassthroughBridge()
+            }
             defer {
                 if let completion {
                     DispatchQueue.main.async(execute: completion)
@@ -178,6 +198,8 @@ final class MockServer: ObservableObject {
             writtenDescValues.removeAll()
             notifyingCharacteristics.removeAll()
             readBuffer.removeAll()
+            passthroughBridge?.reset()
+            clearPassthroughActivity()
 
             publishDeviceState()
             publishStatus(.stopped)
@@ -197,12 +219,21 @@ final class MockServer: ObservableObject {
         let fd = accept(serverFd, nil, nil)
         guard fd >= 0 else { return }
 
+        // Last-connection-wins: the freshly launched simulator app takes over.
+        // The previous client is told it was superseded (its library then stops
+        // auto-reconnecting) and its scans, connections, and channels are torn
+        // down — otherwise the new client would inherit live hardware state.
         if clientFd >= 0 {
-            sendConnectionRejected(to: fd)
-            close(fd)
+            let newcomer = peerClientInfo(for: fd)
+            sendConnectionRejected(to: clientFd, supersededBy: newcomer)
+            readSource?.cancel()
+            readSource = nil
+            close(clientFd)
+            clientFd = -1
             let suffix = clientInfo?.messageSuffix ?? "pid=0, process=unknown"
-            log("Rejected additional client; active client \(suffix)")
-            return
+            clientInfo = nil
+            tearDownClientState()
+            log("Client superseded (\(suffix))")
         }
         clientFd = fd
         clientInfo = peerClientInfo(for: fd)
@@ -253,6 +284,8 @@ final class MockServer: ObservableObject {
             pairedPeripherals.removeAll()
             // An uploaded configuration belongs to the connection that sent it.
             clearClientSuppliedConfiguration()
+            passthroughBridge?.reset()
+            clearPassthroughActivity()
 
             publishDeviceState()
             publishStatus(.listening)
@@ -282,14 +315,15 @@ final class MockServer: ObservableObject {
         write(payload, to: fd)
     }
 
-    private func sendConnectionRejected(to fd: Int32) {
-        let info = clientInfo
-        let suffix = info?.messageSuffix ?? "pid=0, process=unknown"
+    /// Sent to the *previous* client when a new connection takes over. The code
+    /// stays "clientBusy" so pre-3.0 libraries handle the eviction identically.
+    private func sendConnectionRejected(to fd: Int32, supersededBy newcomer: SocketClientInfo?) {
+        let suffix = newcomer?.messageSuffix ?? "pid=0, process=unknown"
         let msg: [String: Any] = [
             "type": "connectionRejected",
             "code": "clientBusy",
-            "message": "another ImpossiBLE client is already connected (\(suffix))",
-            "activeClient": info?.wireValue ?? [
+            "message": "superseded by a newer ImpossiBLE client (\(suffix))",
+            "activeClient": newcomer?.wireValue ?? [
                 "pid": 0,
                 "processName": "unknown",
             ],
@@ -299,6 +333,49 @@ final class MockServer: ObservableObject {
         var payload = data
         payload.append(UInt8(ascii: "\n"))
         write(payload, to: fd)
+    }
+
+    /// Everything the evicted client owned, in both modes.
+    private func tearDownClientState() {
+        connectedPeripherals.removeAll()
+        pairedPeripherals.removeAll()
+        writtenCharValues.removeAll()
+        writtenDescValues.removeAll()
+        notifyingCharacteristics.removeAll()
+        readBuffer.removeAll()
+        scanTimer?.cancel()
+        scanTimer = nil
+        scanActive = false
+        clearClientSuppliedConfiguration()
+        passthroughBridge?.reset()
+        clearPassthroughActivity()
+        publishDeviceState()
+    }
+
+    private func preparePassthroughBridge() {
+        guard passthroughBridge == nil else { return }
+        let bridge = CBSPassthroughBridge()
+        bridge.messageHandler = { [weak self] message in
+            guard let self else { return }
+            self.ioQueue.async {
+                guard self.serveMode == .passthrough else { return }
+                self.send(message)
+            }
+        }
+        bridge.activityHandler = { [weak self] peripheralId, name, operation, detail in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                self.passthroughActivity.record(id: peripheralId, name: name, operation: operation, detail: detail)
+            }
+            self.log("\(name.isEmpty ? peripheralId.prefix(8) : Substring(name)): \(operation)")
+        }
+        passthroughBridge = bridge
+    }
+
+    private func clearPassthroughActivity() {
+        DispatchQueue.main.async { [passthroughActivity] in
+            passthroughActivity.clear()
+        }
     }
 
     private func write(_ payload: Data, to fd: Int32) {
@@ -344,6 +421,16 @@ final class MockServer: ObservableObject {
 
         log("recv: \(type)")
 
+        if type == "hello" {
+            handleHello(msg)
+            return
+        }
+
+        if serveMode == .passthrough {
+            passthroughBridge?.handleMessage(msg)
+            return
+        }
+
         switch type {
         case "scan":            handleScan(msg)
         case "stopScan":        handleStopScan()
@@ -367,6 +454,24 @@ final class MockServer: ObservableObject {
         default:
             NSLog("ImpossiBLE-Mock: unknown message type: %@", type)
         }
+    }
+
+    // MARK: - Hello
+
+    private func handleHello(_ msg: [String: Any]) {
+        let version = msg["clientVersion"] as? String
+        let bundleId = msg["bundleId"] as? String
+        if var info = clientInfo {
+            info.libraryVersion = version
+            info.bundleId = bundleId
+            clientInfo = info
+            publishConnectedClient(info)
+        }
+        let appVersion = AppVersion.current
+        if let version, version != appVersion {
+            NSLog("ImpossiBLE-Mock: client library %@ does not match app %@ — pin them together", version, appVersion)
+        }
+        log("Client hello — library \(version ?? "unknown") (\(bundleId ?? "?"))")
     }
 
     // MARK: - Helpers for main-thread store access

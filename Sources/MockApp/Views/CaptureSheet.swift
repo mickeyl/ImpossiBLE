@@ -2,8 +2,6 @@ import SwiftUI
 
 struct CaptureSheet: View {
     @ObservedObject var store: MockStore
-    @ObservedObject var server: MockServer
-    @ObservedObject var forwarder: ForwarderController
     var onClose: (() -> Void)?
 
     @Environment(\.dismiss) private var dismiss
@@ -15,8 +13,6 @@ struct CaptureSheet: View {
     @State private var advertisingService = ""
     @State private var configurationName = Self.defaultConfigurationName()
     @State private var excludedDeviceIDs = Set<String>()
-    @State private var startedFromMock = false
-    @State private var startedFromOff = false
     @State private var isSavingConfiguration = false
 
     private var filteredDevices: [CapturedDevice] {
@@ -40,7 +36,7 @@ struct CaptureSheet: View {
         }
         .frame(width: 640, height: 560)
         .onDisappear {
-            stopCaptureAndRestoreIfNeeded()
+            capture.stop()
         }
     }
 
@@ -68,7 +64,7 @@ struct CaptureSheet: View {
                 }
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(isSavingConfiguration || (!forwarder.canStart && !forwarder.isRunning))
+            .disabled(isSavingConfiguration)
 
             Button("Close") {
                 close()
@@ -246,12 +242,8 @@ struct CaptureSheet: View {
         switch capture.status {
             case .idle:
                 capture.lastActivity.isEmpty ? "Ready" : capture.lastActivity
-            case .connecting:
-                "Connecting to impossible-helper"
             case .scanning:
                 capture.lastActivity
-            case .failed(let message):
-                message
         }
     }
 
@@ -269,32 +261,14 @@ struct CaptureSheet: View {
     }
 
     private func startCapture() {
-        startedFromMock = server.status != .stopped
-        startedFromOff = server.status == .stopped && !forwarder.isRunning
         excludedDeviceIDs.removeAll()
-
-        server.stop {
-            forwarder.start {
-                capture.start(serviceUUIDs: requestedServiceUUIDs)
-            }
-        }
+        capture.start(serviceUUIDs: requestedServiceUUIDs)
     }
 
     private func restartCapture() {
         capture.stop()
         excludedDeviceIDs.removeAll()
         capture.start(serviceUUIDs: requestedServiceUUIDs)
-    }
-
-    private func stopCaptureAndRestoreIfNeeded() {
-        capture.stop()
-        if startedFromMock {
-            forwarder.stop {
-                server.start()
-            }
-        } else if startedFromOff {
-            forwarder.stop()
-        }
     }
 
     private func saveConfiguration() {
@@ -305,11 +279,6 @@ struct CaptureSheet: View {
         capture.inspectDevices(selectedDevices) { devices in
             store.saveConfiguration(name: name, devices: devices, loadImmediately: true)
             capture.stop()
-            forwarder.stop {
-                server.start()
-            }
-            startedFromMock = false
-            startedFromOff = false
             isSavingConfiguration = false
             close()
         }

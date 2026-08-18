@@ -59,7 +59,6 @@ final class MenuPanelContentView: NSView {
 final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
     private let store: MockStore
     private let server: MockServer
-    private let forwarder: ForwarderController
     private let modeController: ProviderModeController
     private let statusItem: NSStatusItem
     private var controlWindow: NSPanel?
@@ -70,10 +69,9 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
     private static let controlWindowContentSize = NSSize(width: 360, height: 580)
     private static let controlWindowCornerRadius: CGFloat = 10
 
-    init(store: MockStore, server: MockServer, forwarder: ForwarderController, modeController: ProviderModeController) {
+    init(store: MockStore, server: MockServer, modeController: ProviderModeController) {
         self.store = store
         self.server = server
-        self.forwarder = forwarder
         self.modeController = modeController
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
@@ -112,9 +110,9 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
             .sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
         server.$trafficActive.receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
-        forwarder.$status.receive(on: DispatchQueue.main)
+        modeController.$mode.receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
-        forwarder.$trafficActive.receive(on: DispatchQueue.main)
+        server.passthroughActivity.$trafficActive.receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
         NotificationCenter.default.publisher(for: AppPreferences.controlWindowBehaviorDidChange)
             .sink { [weak self] _ in self?.applyControlWindowBehavior() }
@@ -129,7 +127,7 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
         let image = FontAwesome.brandImage(
             FontAwesome.bluetoothB,
             size: 16,
-            active: server.trafficActive || forwarder.trafficActive,
+            active: server.trafficActive || server.passthroughActivity.trafficActive,
             mode: menuBarMode
         )
         if button.image !== image {
@@ -138,9 +136,8 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     private var menuBarMode: FontAwesome.MenuBarMode {
-        if server.status != .stopped { return .mock }
-        if case .running = forwarder.status { return .passthrough }
-        return .off
+        guard server.status != .stopped else { return .off }
+        return modeController.mode == .passthrough ? .passthrough : .mock
     }
 
     @objc private func toggleControlWindow() {
@@ -165,7 +162,7 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
         let root = MockMenuContent(
             store: store,
             server: server,
-            forwarder: forwarder,
+            activity: server.passthroughActivity,
             controller: modeController,
             onDismiss: { [weak self] in self?.hideControlWindow() },
             onOpenCapture: { [weak self] in self?.openCaptureWindow() },
@@ -243,8 +240,6 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
 
         let root = CaptureSheet(
             store: store,
-            server: server,
-            forwarder: forwarder,
             onClose: { [weak self] in self?.captureWindow?.close() }
         )
         .background(DeviceEditorWindowActivator())

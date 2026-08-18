@@ -2,11 +2,15 @@
 
 ## Project Shape
 
-- `Sources/ImpossiBLE` is the simulator-side Swift package library. It swizzles CoreBluetooth APIs at `+load` time and sends newline-delimited JSON to `/tmp/impossible.sock`. The socket is opened lazily on the first `CBCentralManager` instantiation (via a `dispatch_once` in `cbs_post_init`), so linking ImpossiBLE without using CoreBluetooth does not contact the daemon. The connection layer (`CBSConnection`) auto-reconnects and drives `CBManagerState` transitions (`poweredOn`/`poweredOff`) based on socket connectivity.
-- `Sources/Helper` builds `impossible-helper.app`, the host-side forwarding provider that talks to real Mac Bluetooth hardware.
-- `Sources/MockApp` builds `ImpossiBLE-Mock.app`, the host-side menu bar provider that serves configurable virtual BLE peripherals and controls Passthrough forwarding. It has its own `Package.swift` and is built via `swift build` (SPM). Font resources (FontAwesome Brands) are bundled via SPM resource rules. The status item is implemented with AppKit (`StatusBarController`) rather than SwiftUI `MenuBarExtra` so the control panel can remain open while other apps are active.
+- `Sources/ImpossiBLE` is the simulator-side Swift package library. It swizzles CoreBluetooth APIs at `+load` time and sends newline-delimited JSON to `/tmp/impossible.sock`. The socket is opened lazily on the first `CBCentralManager` instantiation (via a `dispatch_once` in `cbs_post_init`), so linking ImpossiBLE without using CoreBluetooth does not contact the provider. The connection layer (`CBSConnection`) auto-reconnects, sends a `hello {clientVersion, bundleId, pid}` handshake on connect (`kCBSLibraryVersion` — bump on release), and drives `CBManagerState` transitions (`poweredOn`/`poweredOff`) based on socket connectivity.
+- `Sources/MockApp` builds `ImpossiBLE-Mock.app`, the host-side menu bar provider and **single owner of the socket in both modes**. It has its own `Package.swift` with two targets: the Swift executable, and `ImpossiBLEPassthroughCore`, an ObjC library target containing `CBSPassthroughBridge` — the former `impossible-helper` daemon minus its socket server. `MockServer` owns the socket and routes by `serveMode`: Mock answers from `MockStore`/client fixtures, Passthrough forwards every message to the bridge, which translates to real CoreBluetooth calls and emits replies through its `messageHandler`. There is no separate helper process anymore (removed in 3.0.0). Font resources (FontAwesome Brands) are bundled via SPM resource rules. The status item is implemented with AppKit (`StatusBarController`) rather than SwiftUI `MenuBarExtra` so the control panel can remain open while other apps are active.
+- Passthrough needs `NSBluetoothAlwaysUsageDescription` (in `Resources/Info.plist`) and — under the Hardened Runtime of release builds — `com.apple.security.device.bluetooth` in `Resources/entitlements.plist`. Missing entitlement is the classic "works in debug (ad-hoc, Hardened Runtime not enforced), denied in release" trap. Ad-hoc dev builds get a fresh identity each rebuild, so macOS re-prompts for Bluetooth consent.
 - `SampleApp` is an iOS sample Xcode project that imports the local package and uses normal CoreBluetooth APIs.
 - `Sources/ImpossiBLE/CBSMockConfiguration.m` is the only client-side file with a public API. Everything else activates itself; these three functions exist so a test can supply its own virtual peripherals.
+
+## Client takeover semantics
+
+**Single client, last-connection-wins** (aligned with CAMouflage in 3.0.0): a new connection *takes over* rather than being rejected. `MockServer.acceptClient()` sends `connectionRejected {code: clientBusy}` to the **previous** client (whose library then stops auto-reconnecting), closes it, and tears down everything it owned — mock state, client-supplied configuration, and the bridge's scans/connections/L2CAP channels (`tearDownClientState()`). This makes relaunching the app or switching simulators "just work"; to use an older simulator again, relaunch its app. The wire code stays `clientBusy` so pre-3.0 libraries handle eviction identically.
 
 ## Client-Supplied Mock Configurations
 
@@ -41,31 +45,15 @@ The mock *server* still has no L2CAP support (`handleOpenL2CAP` returns "L2CAP i
 
 ## Forwarding vs Mocking
 
-The iOS app does not switch modes directly. It always talks to `/tmp/impossible.sock`; the active macOS provider determines behavior.
+The iOS app does not switch modes directly. It always talks to `/tmp/impossible.sock`; the mock app's selected mode determines behavior.
 
-The mock menu bar app has a segmented **Off / Mock / Passthrough** picker that controls both providers. The selected mode is owned by `ProviderModeController` (the single source of truth the picker binds to) so it reflects the choice immediately instead of inferring it from mid-transition provider state; transitions are serialized and stop the other provider. The menu bar icon reflects the active mode: strikethrough when off, plain Bluetooth when forwarding, dot-badged when mocking. The control panel is a borderless AppKit panel centered under the status item. It is persistent by default. The footer carries label-less icon toggles with tooltips: **Launch at Login** (`power`), **Dismiss on Switch** (`eye.slash`, restores popover-style hiding on app deactivation), and — in Passthrough only — **Keep Helper on Quit** (`powerplug`, default off; applied via `applicationShouldTerminate` so it covers ⌘Q too). Changing a toggle shows a brief inline confirmation between the toggles and the Quit button.
+The segmented **Off / Mock / Passthrough** picker is owned by `ProviderModeController` (the single source of truth the picker binds to) so it reflects the choice immediately instead of inferring it from mid-transition server state; transitions are serialized and always bounce through a `server.stop`, so a connected client observes a disconnect instead of a silent behavior change. The menu bar icon reflects the active mode: strikethrough when off, plain Bluetooth when forwarding, dot-badged when mocking. The control panel is a borderless AppKit panel centered under the status item. It is persistent by default. The footer carries label-less icon toggles with tooltips: **Launch at Login** (`power`) and **Dismiss on Switch** (`eye.slash`, restores popover-style hiding on app deactivation). Changing a toggle shows a brief inline confirmation between the toggles and the Quit button.
 
-In Passthrough mode, the helper writes `/tmp/impossible-passthrough-activity.json` with devices that have actual communication activity. The list intentionally ignores scan/discovery/connect activity and only records GATT/L2CAP operations: characteristic read/write, descriptor read/write, subscribe/unsubscribe, L2CAP open/read/write/close. The mock app polls that snapshot to show communicating devices and pulse the menu bar icon on Passthrough traffic.
+In Passthrough mode, the bridge reports actual communication activity through its `activityHandler`, aggregated by `PassthroughActivityMonitor` for the panel list and the icon pulse (the pre-3.0 `/tmp/impossible-passthrough-activity.json` snapshot file is gone). The list intentionally ignores scan/discovery/connect activity and only records GATT/L2CAP operations: characteristic read/write, descriptor read/write, subscribe/unsubscribe, L2CAP open/read/write/close.
 
-Mock capture is a menu bar app workflow that temporarily uses the real forwarding helper. Opening **Capture** stops the mock server if needed, starts `impossible-helper.app`, connects to `/tmp/impossible.sock` as a helper client, scans live advertisements, and shows filtered capture results. Saving a capture runs a deep inspection pass for selected connectable devices: connect, discover services, discover characteristics, discover descriptors, read readable characteristic values, and read descriptor values. Non-connectable devices or devices that fail inspection are saved advertisement-only. After save, the app stops the helper, restarts Mock mode, and loads the captured configuration for tuning.
+Mock capture runs entirely in process: `CaptureSession` owns its **own** `CBSPassthroughBridge` instance (its own `CBCentralManager`), so capturing no longer stops or restarts whatever mode is currently serving the simulator. Opening **Capture** scans live advertisements and shows filtered capture results. Saving a capture runs a deep inspection pass for selected connectable devices: connect, discover services, discover characteristics, discover descriptors, read readable characteristic values, and read descriptor values. Non-connectable devices or devices that fail inspection are saved advertisement-only. After save, the captured configuration is loaded for tuning.
 
 Capture rows hide unnamed devices by default, sort more "interesting" advertisements first (more advertised services, named, connectable, manufacturer data, RSSI), and use a factory icon to indicate manufacturer-specific advertisement data.
-
-From the command line:
-
-```bash
-# Forwarding mode: simulator app -> real Mac Bluetooth
-make mock-stop
-make run
-```
-
-```bash
-# Mocking mode: simulator app -> virtual BLE devices
-make stop
-make mock-run
-```
-
-Only one provider should run at a time because both `impossible-helper.app` and `ImpossiBLE-Mock.app` bind `/tmp/impossible.sock`.
 
 For local development of the menu bar app, prefer:
 
@@ -73,7 +61,7 @@ For local development of the menu bar app, prefer:
 make mock-relaunch
 ```
 
-That target rebuilds the helper, packages the debug mock binary into `ImpossiBLE-Mock.app`, ad-hoc signs it, stops stale helper/mock processes, and opens the bundle. This avoids testing a new mock app against an older installed helper from `~/.local/bin`.
+That target packages the debug mock binary into `ImpossiBLE-Mock.app`, ad-hoc signs it, stops stale mock processes, and opens the bundle.
 
 ## Build And Verification
 
@@ -83,7 +71,7 @@ Use these checks before preparing changes for commit:
 make mock-clean mock
 cd Sources/MockApp && swift build   # standalone SPM check
 xcodebuild -project SampleApp/SampleApp.xcodeproj -scheme SampleApp -sdk iphonesimulator -configuration Debug -destination 'generic/platform=iOS Simulator' build
-plutil -lint Sources/MockApp/Resources/Info.plist Sources/MockApp/Resources/entitlements.plist Sources/Helper/Info.plist Sources/Helper/entitlements.plist
+plutil -lint Sources/MockApp/Resources/Info.plist Sources/MockApp/Resources/entitlements.plist
 ```
 
 For Gatekeeper-related work:
@@ -97,21 +85,28 @@ make mock-notarize NOTARY_PROFILE="impossible-notary"
 
 ## Debugging Passthrough
 
-The helper has gated verbose tracing, off by default. Enable it with the `IMPOSSIBLE_HELPER_DEBUG` environment variable (works when running the binary directly) or by creating the `/tmp/impossible-helper.debug` sentinel file (works for the `open`/launchd launch path, where env vars don't propagate), then restart the helper. Traces cover the L2CAP lifecycle, stream events, write byte counts, and client connect/disconnect, prefixed with `DEBUG: ImpossiBLE-Helper:`. `NSLog` goes to both stderr (when run directly) and the unified log; the unified log redacts dynamic args as `<private>`, so capture the helper's stderr for full detail.
+The passthrough bridge has gated verbose tracing, off by default. Enable it with the `IMPOSSIBLE_PASSTHROUGH_DEBUG` environment variable (works when running the mock binary directly) or by creating the `/tmp/impossible-passthrough.debug` sentinel file (works for the `open`/launchd launch path, where env vars don't propagate), then restart the mock app. Traces cover the L2CAP lifecycle, stream events, write byte counts, and message dispatch, prefixed with `DEBUG: ImpossiBLE-Passthrough:`. `NSLog` goes to both stderr (when run directly) and the unified log; the unified log redacts dynamic args as `<private>`, so capture stderr for full detail (`make mock-dev`).
 
 On a provider-connection drop the simulator-side shim closes open L2CAP channels and synthesizes `didDisconnectPeripheral` for every owned peripheral (`cbs_handle_daemon_disconnect`), so the host app re-establishes instead of hanging on a dead channel.
 
 ## Known Follow-ups
 
-- **Single-instance lock for the helper.** Nothing stops two `impossible-helper.app` instances (or helper + mock) from running at once; whichever `bind`s `/tmp/impossible.sock` last does `unlink`+`bind` and steals it, so clients silently bounce between providers. The mock app guards via `pgrep`/LaunchServices and the `currentPIDs` check, but a LaunchAgent + manual launch — or a directly-exec'd helper alongside the LaunchServices-managed one — can still produce two. Add a pidfile `flock`, or refuse to start when a live listener already owns the socket.
+- **Socket-ownership guard.** Nothing stops a second copy of the mock app (or, later, the Simsalabim suite app) from `unlink`+`bind`ing `/tmp/impossible.sock` and stealing it from a running instance. Before binding, probe the existing socket with `connect()`; refuse to start the provider when a live listener answers, and only unlink a stale socket file. Planned as part of the shared SimBridgeKit extraction (see `../PLAN-SIMSALABIM.md`).
 
 ## Release Checklist
 
-When cutting a new ImpossiBLE release, update the Homebrew formula in
-`mickeyl/homebrew-formulae` as part of the release. Bump
-`Formula/impossible.rb` to the new tag, update the tarball SHA256, run
-`brew audit --strict --online impossible` and `brew style
-Formula/impossible.rb`, then commit and push the tap update.
+When cutting a new ImpossiBLE release:
+
+- Bump the version in **three** places and keep them identical:
+  `kCBSLibraryVersion` in `Sources/ImpossiBLE/CBSConnection.m`,
+  `AppVersion.current` in `Sources/MockApp/Models/AppVersion.swift`, and
+  `CFBundleShortVersionString` in `Sources/MockApp/Resources/Info.plist`.
+- Update the Homebrew formula in `mickeyl/homebrew-formulae`. Bump
+  `Formula/impossible.rb` to the new tag, update the tarball SHA256, run
+  `brew audit --strict --online impossible` and `brew style
+  Formula/impossible.rb`, then commit and push the tap update. Note: since
+  3.0.0 there is no `impossible-helper` anymore — the formula must only build
+  and install the mock app.
 
 ## Generated Artifacts
 
