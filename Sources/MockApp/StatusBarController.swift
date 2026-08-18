@@ -1,111 +1,54 @@
 import AppKit
 import Combine
 import SwiftUI
+import SimBridgeServer
+import SimBridgeShell
 
-final class ControlPanel: NSPanel {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
-}
-
-final class TransparentHostingView<Content: View>: NSHostingView<Content> {
-    override var isOpaque: Bool { false }
-}
-
-final class MenuPanelContentView: NSView {
-    private let hostingView: NSView
-    private let cornerRadius: CGFloat
-
-    override var isOpaque: Bool { false }
-
-    init<Content: View>(rootView: Content, contentSize: NSSize, cornerRadius: CGFloat) {
-        self.cornerRadius = cornerRadius
-        hostingView = TransparentHostingView(rootView: rootView)
-        super.init(frame: NSRect(origin: .zero, size: contentSize))
-
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.clear.cgColor
-
-        hostingView.frame = bounds
-        hostingView.autoresizingMask = [.width, .height]
-        hostingView.wantsLayer = true
-        hostingView.layer?.isOpaque = false
-        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
-        hostingView.layer?.cornerRadius = cornerRadius
-        hostingView.layer?.cornerCurve = .continuous
-        hostingView.layer?.masksToBounds = true
-        addSubview(hostingView)
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-
-        let rect = bounds.insetBy(dx: 0.25, dy: 0.25)
-        let path = NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
-        NSColor.windowBackgroundColor.setFill()
-        path.fill()
-
-        NSColor.separatorColor.withAlphaComponent(0.35).setStroke()
-        path.lineWidth = 0.5
-        path.stroke()
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-}
-
+/// Owns the app's menu bar presence and its auxiliary windows. The status item
+/// and control panel machinery come from SimBridgeShell's
+/// `StatusItemPanelController`; this class contributes the icon, the panel
+/// content, and the capture/device-editor document windows.
 @MainActor
 final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
     private let store: MockStore
     private let server: MockServer
-    private let modeController: ProviderModeController
-    private let statusItem: NSStatusItem
-    private var controlWindow: NSPanel?
+    private let modeController: ModeTransitionController<ProviderMode>
+    private var panel: StatusItemPanelController!
     private var captureWindow: NSWindow?
     private var deviceWindows: [UUID: NSWindow] = [:]
     private var cancellables: Set<AnyCancellable> = []
-    private var statusButtonClickMonitor: Any?
     private static let controlWindowContentSize = NSSize(width: 360, height: 580)
-    private static let controlWindowCornerRadius: CGFloat = 10
 
-    init(store: MockStore, server: MockServer, modeController: ProviderModeController) {
+    init(store: MockStore, server: MockServer, modeController: ModeTransitionController<ProviderMode>) {
         self.store = store
         self.server = server
         self.modeController = modeController
-        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
-        configureStatusItem()
+        panel = StatusItemPanelController(
+            title: "ImpossiBLE Mock",
+            toolTip: "ImpossiBLE Mock",
+            contentSize: Self.controlWindowContentSize
+        ) { [weak self] in
+            guard let self else { return AnyView(EmptyView()) }
+            return AnyView(MockMenuContent(
+                store: self.store,
+                server: self.server,
+                transport: self.server.transport,
+                activity: self.server.passthroughActivity,
+                controller: self.modeController,
+                onDismiss: { [weak self] in self?.panel.hidePanel() },
+                onOpenCapture: { [weak self] in self?.openCaptureWindow() },
+                onOpenDevice: { [weak self] deviceId in self?.openDeviceEditor(deviceId) }
+            ))
+        }
         observeIconState()
         updateIcon()
     }
 
-    private func configureStatusItem() {
-        guard let button = statusItem.button else { return }
-        button.target = self
-        button.action = #selector(toggleControlWindow)
-        button.sendAction(on: [.leftMouseDown, .rightMouseDown])
-        button.imagePosition = .imageOnly
-        button.toolTip = "ImpossiBLE Mock"
-        statusButtonClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self, weak button] event in
-            guard let self, let button, event.window === button.window else { return event }
-            guard !event.modifierFlags.contains(.command) else { return event }
-            let location = button.convert(event.locationInWindow, from: nil)
-            guard button.bounds.contains(location) else { return event }
-            self.toggleControlWindow()
-            return nil
-        }
-    }
-
-    deinit {
-        if let statusButtonClickMonitor {
-            NSEvent.removeMonitor(statusButtonClickMonitor)
-        }
-    }
-
     private func observeIconState() {
-        // @Published emits in willSet, so reading server.trafficActive inside the sink would
-        // see the old value. Hop through the main queue so updateIcon() runs after didSet.
+        // @Published emits in willSet, so reading server state inside the sink
+        // would see the old value. Hop through the main queue so updateIcon()
+        // runs after didSet.
         server.transport.$status.receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
         server.transport.$trafficActive.receive(on: DispatchQueue.main)
@@ -114,25 +57,15 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
             .sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
         server.passthroughActivity.$trafficActive.receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
-        NotificationCenter.default.publisher(for: AppPreferences.controlWindowBehaviorDidChange)
-            .sink { [weak self] _ in self?.applyControlWindowBehavior() }
-            .store(in: &cancellables)
-        NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)
-            .sink { [weak self] _ in self?.hideControlWindowAfterDeactivationIfNeeded() }
-            .store(in: &cancellables)
     }
 
     private func updateIcon() {
-        guard let button = statusItem.button else { return }
-        let image = FontAwesome.brandImage(
+        panel.setIcon(FontAwesome.brandImage(
             FontAwesome.bluetoothB,
             size: 16,
             active: server.transport.trafficActive || server.passthroughActivity.trafficActive,
             mode: menuBarMode
-        )
-        if button.image !== image {
-            button.image = image
-        }
+        ))
     }
 
     private var menuBarMode: FontAwesome.MenuBarMode {
@@ -144,99 +77,10 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
         }
     }
 
-    @objc private func toggleControlWindow() {
-        if controlWindow?.isVisible == true {
-            hideControlWindow()
-        } else {
-            showControlWindow()
-        }
-    }
-
-    private func showControlWindow() {
-        let window = controlWindow ?? makeControlWindow()
-        applyControlWindowBehavior()
-        positionControlWindow(window)
-        NSRunningApplication.current.activate(options: [.activateAllWindows])
-        NSApplication.shared.activate()
-        window.makeKeyAndOrderFront(nil)
-        window.orderFrontRegardless()
-    }
-
-    private func makeControlWindow() -> NSPanel {
-        let root = MockMenuContent(
-            store: store,
-            server: server,
-            transport: server.transport,
-            activity: server.passthroughActivity,
-            controller: modeController,
-            onDismiss: { [weak self] in self?.hideControlWindow() },
-            onOpenCapture: { [weak self] in self?.openCaptureWindow() },
-            onOpenDevice: { [weak self] deviceId in self?.openDeviceEditor(deviceId) }
-        )
-        .frame(width: 360, height: 580)
-
-        let contentRect = NSRect(origin: .zero, size: Self.controlWindowContentSize)
-        let window = ControlPanel(
-            contentRect: contentRect,
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false
-        )
-        window.contentView = MenuPanelContentView(
-            rootView: root,
-            contentSize: Self.controlWindowContentSize,
-            cornerRadius: Self.controlWindowCornerRadius
-        )
-        window.delegate = self
-        window.title = "ImpossiBLE Mock"
-        window.isReleasedWhenClosed = false
-        window.hasShadow = true
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.level = .floating
-        window.collectionBehavior = [.moveToActiveSpace]
-        window.hidesOnDeactivate = false
-        window.invalidateShadow()
-        controlWindow = window
-        return window
-    }
-
-    private func applyControlWindowBehavior() {
-        controlWindow?.hidesOnDeactivate = false
-    }
-
-    private func hideControlWindowAfterDeactivationIfNeeded() {
-        guard AppPreferences.dismissControlWindowOnDeactivate else { return }
-        hideControlWindow()
-    }
-
-    private func positionControlWindow(_ window: NSWindow) {
-        guard let button = statusItem.button, let buttonWindow = button.window else {
-            window.center()
-            return
-        }
-
-        let buttonFrame = buttonWindow.convertToScreen(button.frame)
-        let screen = buttonWindow.screen ?? NSScreen.main
-        let visibleFrame = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
-        window.setContentSize(Self.controlWindowContentSize)
-        window.contentView?.layoutSubtreeIfNeeded()
-        let frameSize = window.frameRect(forContentRect: NSRect(origin: .zero, size: Self.controlWindowContentSize)).size
-        let centeredX = buttonFrame.midX - frameSize.width / 2
-        let x = min(
-            max(centeredX, visibleFrame.minX + 8),
-            visibleFrame.maxX - frameSize.width - 8
-        )
-        let y = max(visibleFrame.minY + 8, buttonFrame.minY - frameSize.height - 8)
-        window.setFrameOrigin(NSPoint(x: x, y: y))
-    }
-
-    private func hideControlWindow() {
-        controlWindow?.orderOut(nil)
-    }
+    // MARK: - Document windows
 
     private func openCaptureWindow() {
-        hideControlWindow()
+        panel.hidePanel()
         if let captureWindow {
             captureWindow.makeKeyAndOrderFront(nil)
             NSRunningApplication.current.activate(options: [.activateAllWindows])
@@ -261,7 +105,7 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     private func openDeviceEditor(_ deviceId: UUID) {
-        hideControlWindow()
+        panel.hidePanel()
         if let window = deviceWindows[deviceId] {
             showDocumentWindow(window)
             return
@@ -307,16 +151,6 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
         window.orderFrontRegardless()
         NSRunningApplication.current.activate(options: [.activateAllWindows])
         NSApplication.shared.activate()
-    }
-
-    nonisolated func windowDidResignKey(_ notification: Notification) {
-        Task { @MainActor in
-            guard AppPreferences.dismissControlWindowOnDeactivate,
-                  let window = notification.object as? NSWindow,
-                  window === self.controlWindow
-            else { return }
-            self.hideControlWindow()
-        }
     }
 
     nonisolated func windowWillClose(_ notification: Notification) {

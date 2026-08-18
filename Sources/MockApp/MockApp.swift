@@ -1,18 +1,38 @@
 import SwiftUI
 import AppKit
+import SimBridgeShell
 
 @MainActor
 private final class MockAppRuntime {
     let store: MockStore
     let server: MockServer
-    let modeController: ProviderModeController
+    let modeController: ModeTransitionController<ProviderMode>
     let statusBar: StatusBarController
 
     init() {
         store = MockStore()
-        server = MockServer(autoStart: false)
-        // Creating the controller restores the persisted provider mode.
-        modeController = ProviderModeController(server: server)
+        let server = MockServer(autoStart: false)
+        self.server = server
+        // Creating the controller restores the persisted provider mode. Mode
+        // switches always bounce through a stop so a connected client observes
+        // a disconnect instead of silently changing provider behavior.
+        modeController = ModeTransitionController(
+            initial: ProviderMode.persisted(legacyServerEnabledKey: "ServerEnabled"),
+            persist: { $0.persist() }
+        ) { mode, completion in
+            switch mode {
+                case .off:
+                    server.stop(completion: completion)
+                case .mock:
+                    server.stop {
+                        server.start(mode: .mock, completion: completion)
+                    }
+                case .passthrough:
+                    server.stop {
+                        server.start(mode: .passthrough, completion: completion)
+                    }
+            }
+        }
         statusBar = StatusBarController(store: store, server: server, modeController: modeController)
 
         server.store = store
@@ -43,7 +63,7 @@ struct MockApp: App {
 
     @StateObject private var store: MockStore
     @StateObject private var server: MockServer
-    @StateObject private var modeController: ProviderModeController
+    @StateObject private var modeController: ModeTransitionController<ProviderMode>
     @StateObject private var statusBar: StatusBarController
 
     init() {

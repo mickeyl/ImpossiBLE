@@ -1,13 +1,14 @@
 import SwiftUI
 import AppKit
 import SimBridgeServer
+import SimBridgeShell
 
 struct MockMenuContent: View {
     @ObservedObject var store: MockStore
     @ObservedObject var server: MockServer
     @ObservedObject var transport: ProtocolServer
     @ObservedObject var activity: PassthroughActivityMonitor
-    @ObservedObject var controller: ProviderModeController
+    @ObservedObject var controller: ModeTransitionController<ProviderMode>
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
     var onDismiss: (() -> Void)?
@@ -16,14 +17,15 @@ struct MockMenuContent: View {
     @State private var showConfigs = false
     @State private var saveConfigName = ""
     @State private var showSaveField = false
-    @AppStorage(AppPreferences.dismissControlWindowOnDeactivateKey) private var dismissOnDeactivate = false
+    @State private var dismissOnDeactivate = ShellPreferences.dismissControlWindowOnDeactivate
     // Launch-at-login lives in a launchd plist, not UserDefaults. Mirror it in
     // view state so the toggle reflects taps immediately instead of re-reading
     // the (non-observable) filesystem.
-    @State private var launchAtLogin = FileManager.default.fileExists(atPath: MockMenuContent.launchAgentPath)
+    @State private var launchAtLogin = MockMenuContent.launchAgent.isEnabled
     @State private var settingsAck = ""
     @State private var ackClear: DispatchWorkItem?
     fileprivate static let statusIconColumnWidth: CGFloat = 24
+    private static let launchAgent = LaunchAtLogin(label: "com.impossible.ble-mock")
 
     var body: some View {
         VStack(spacing: 0) {
@@ -155,11 +157,11 @@ struct MockMenuContent: View {
 
     // MARK: - Mode
 
-    private var currentMode: MockProviderMode {
+    private var currentMode: ProviderMode {
         controller.mode
     }
 
-    private var modeBinding: Binding<MockProviderMode> {
+    private var modeBinding: Binding<ProviderMode> {
         Binding(
             get: { controller.mode },
             set: { controller.select($0) }
@@ -188,7 +190,7 @@ struct MockMenuContent: View {
             }
 
             Picker("Mode", selection: modeBinding) {
-                ForEach(MockProviderMode.allCases, id: \.self) { mode in
+                ForEach(ProviderMode.allCases, id: \.self) { mode in
                     Text(mode.title).tag(mode)
                 }
             }
@@ -604,20 +606,6 @@ struct MockMenuContent: View {
 
     // MARK: - Footer
 
-    private static let launchAgentPath: String = {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents/com.impossible.ble-mock.plist")
-            .path
-    }()
-
-    private func applyLaunchAtLogin(_ enabled: Bool) {
-        if enabled {
-            Self.writeLaunchAgent()
-        } else {
-            try? FileManager.default.removeItem(atPath: Self.launchAgentPath)
-        }
-    }
-
     /// Briefly shows a one-line receipt in the footer after a preference changes.
     private func acknowledge(_ message: String) {
         ackClear?.cancel()
@@ -631,25 +619,6 @@ struct MockMenuContent: View {
         }
         ackClear = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: item)
-    }
-
-    private static func writeLaunchAgent() {
-        let bundleURL = Bundle.main.bundleURL
-        let arguments: [String] = if bundleURL.pathExtension == "app" {
-            ["/usr/bin/open", bundleURL.path]
-        } else {
-            [Bundle.main.executableURL?.path ?? ProcessInfo.processInfo.arguments[0]]
-        }
-        let plist: [String: Any] = [
-            "Label": "com.impossible.ble-mock",
-            "ProgramArguments": arguments,
-            "RunAtLoad": true
-        ]
-        let dir = (launchAgentPath as NSString).deletingLastPathComponent
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        if let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0) {
-            FileManager.default.createFile(atPath: launchAgentPath, contents: data)
-        }
     }
 
     private var footer: some View {
@@ -670,7 +639,7 @@ struct MockMenuContent: View {
                 isOn: $launchAtLogin
             )
             .onChange(of: launchAtLogin) { _, newValue in
-                applyLaunchAtLogin(newValue)
+                Self.launchAgent.setEnabled(newValue)
                 acknowledge(newValue ? "Will launch at login" : "Won’t launch at login")
             }
 
@@ -680,7 +649,7 @@ struct MockMenuContent: View {
                 isOn: $dismissOnDeactivate
             )
             .onChange(of: dismissOnDeactivate) { _, newValue in
-                NotificationCenter.default.post(name: AppPreferences.controlWindowBehaviorDidChange, object: nil)
+                ShellPreferences.dismissControlWindowOnDeactivate = newValue
                 acknowledge(newValue ? "Panel auto-hides" : "Panel stays open")
             }
 
@@ -705,37 +674,6 @@ struct MockMenuContent: View {
             .foregroundStyle(.secondary)
         }
         .padding(12)
-    }
-}
-
-/// A label-less preference toggle for the footer. The on state is shown three
-/// ways so it stays unambiguous without text: filled glyph, accent tint, and a
-/// tinted background pill. The meaning lives in the tooltip and accessibility label.
-private struct IconToggle: View {
-    let systemImage: String
-    let help: String
-    @Binding var isOn: Bool
-
-    var body: some View {
-        Button {
-            isOn.toggle()
-        } label: {
-            Image(systemName: systemImage)
-                .font(.system(size: 13, weight: .medium))
-                .symbolVariant(isOn ? .fill : .none)
-                .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
-                .frame(width: 26, height: 22)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(isOn ? Color.accentColor.opacity(0.15) : .clear)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .help(help)
-        .accessibilityLabel(help)
-        .accessibilityValue(isOn ? "On" : "Off")
-        .accessibilityAddTraits(isOn ? .isSelected : [])
     }
 }
 

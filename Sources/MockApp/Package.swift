@@ -21,6 +21,7 @@ let package = Package(
             dependencies: [
                 "ImpossiBLEPassthroughCore",
                 .product(name: "SimBridgeServer", package: "SimBridgeKit"),
+                .product(name: "SimBridgeShell", package: "SimBridgeKit"),
             ],
             path: ".",
             exclude: [
@@ -31,16 +32,13 @@ let package = Package(
             ],
             sources: [
                 "MockApp.swift",
-                "Models/AppPreferences.swift",
                 "Models/AppVersion.swift",
                 "Models/MockStore.swift",
-                "Models/MockProviderMode.swift",
                 "Models/MockDevice.swift",
                 "StatusBarController.swift",
                 "Server/MockServer.swift",
                 "Server/CaptureSession.swift",
                 "Server/PassthroughActivity.swift",
-                "Server/ProviderModeController.swift",
                 "Views/CaptureSheet.swift",
                 "Views/DescriptorEditorView.swift",
                 "Views/CharacteristicEditorView.swift",
