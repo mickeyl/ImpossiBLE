@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 
-final class MockStore: ObservableObject {
+public final class MockStore: ObservableObject {
     @Published var devices: [MockDevice] = []
     @Published var configurations: [MockConfiguration] = []
     @Published var activeConfigurationName: String = "" {
@@ -11,7 +11,7 @@ final class MockStore: ObservableObject {
     private let devicesURL: URL
     private let configsURL: URL
 
-    init() {
+    public init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = appSupport.appendingPathComponent("ImpossiBLE", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

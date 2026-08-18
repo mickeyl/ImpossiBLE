@@ -3,7 +3,7 @@ import AppKit
 import SimBridgeServer
 import SimBridgeShell
 
-struct MockMenuContent: View {
+public struct MockMenuContent: View {
     @ObservedObject var store: MockStore
     @ObservedObject var server: MockServer
     @ObservedObject var transport: ProtocolServer
@@ -27,7 +27,27 @@ struct MockMenuContent: View {
     fileprivate static let statusIconColumnWidth: CGFloat = 24
     private static let launchAgent = LaunchAtLogin(label: "com.impossible.ble-mock")
 
-    var body: some View {
+    public init(
+        store: MockStore,
+        server: MockServer,
+        transport: ProtocolServer,
+        activity: PassthroughActivityMonitor,
+        controller: ModeTransitionController<ProviderMode>,
+        onDismiss: (() -> Void)? = nil,
+        onOpenCapture: (() -> Void)? = nil,
+        onOpenDevice: ((UUID) -> Void)? = nil
+    ) {
+        self.store = store
+        self.server = server
+        self.transport = transport
+        self.activity = activity
+        self.controller = controller
+        self.onDismiss = onDismiss
+        self.onOpenCapture = onOpenCapture
+        self.onOpenDevice = onOpenDevice
+    }
+
+    public var body: some View {
         VStack(spacing: 0) {
             header
             Divider()

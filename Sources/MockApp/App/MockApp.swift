@@ -1,4 +1,5 @@
 import SwiftUI
+import ImpossiBLEProviderKit
 import AppKit
 import SimBridgeShell
 

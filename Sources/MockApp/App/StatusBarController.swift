@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import ImpossiBLEProviderKit
 import SimBridgeServer
 import SimBridgeShell
 

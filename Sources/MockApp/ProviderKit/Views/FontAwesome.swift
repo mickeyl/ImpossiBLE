@@ -1,11 +1,11 @@
 import AppKit
 import CoreText
 
-enum FontAwesome {
+public enum FontAwesome {
 
-    static let bluetoothB = "\u{f294}"
+    public static let bluetoothB = "\u{f294}"
 
-    enum MenuBarMode {
+    public enum MenuBarMode {
         case off
         case mock
         case passthrough
@@ -31,7 +31,7 @@ enum FontAwesome {
         CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
     }
 
-    static func brandImage(_ glyph: String, size: CGFloat, active: Bool = false, mode: MenuBarMode = .off) -> NSImage {
+    public static func brandImage(_ glyph: String, size: CGFloat, active: Bool = false, mode: MenuBarMode = .off) -> NSImage {
         let cacheKey = ImageCacheKey(glyph: glyph, size: size, active: active, mode: mode)
         if let cached = imageCache[cacheKey] {
             return cached

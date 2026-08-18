@@ -1,15 +1,15 @@
 import Foundation
 
-struct PassthroughDeviceActivity: Identifiable, Equatable {
-    let id: String
-    let name: String
-    let lastOperation: String
-    let lastDetail: String
-    let lastAt: Date
-    let count: Int
-    let isActive: Bool
+public struct PassthroughDeviceActivity: Identifiable, Equatable {
+    public let id: String
+    public let name: String
+    public let lastOperation: String
+    public let lastDetail: String
+    public let lastAt: Date
+    public let count: Int
+    public let isActive: Bool
 
-    var displayName: String {
+    public var displayName: String {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
             return trimmed
@@ -22,10 +22,10 @@ struct PassthroughDeviceActivity: Identifiable, Equatable {
 /// the device list the panel shows. In-process successor of the daemon's
 /// `/tmp/impossible-passthrough-activity.json` snapshot polling.
 /// All members must be called on the main thread.
-final class PassthroughActivityMonitor: ObservableObject {
-    @Published private(set) var devices: [PassthroughDeviceActivity] = []
-    @Published private(set) var trafficActive = false
-    @Published private(set) var lastActivity = ""
+public final class PassthroughActivityMonitor: ObservableObject {
+    @Published public private(set) var devices: [PassthroughDeviceActivity] = []
+    @Published public private(set) var trafficActive = false
+    @Published public private(set) var lastActivity = ""
 
     private struct Entry {
         var name: String

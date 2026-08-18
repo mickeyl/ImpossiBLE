@@ -12,7 +12,7 @@ MOCK_ENTITLEMENTS = Sources/MockApp/Resources/entitlements.plist
 MOCK_BUNDLE = ImpossiBLE-Mock.app
 MOCK_BIN = $(MOCK_BUNDLE)/Contents/MacOS/ImpossiBLE-Mock
 MOCK_BIN_NAME = ImpossiBLE-Mock
-MOCK_FONT_RESOURCE = Sources/MockApp/Resources/fa-brands-400.ttf
+MOCK_FONT_RESOURCE = Sources/MockApp/ProviderKit/Resources/fa-brands-400.ttf
 INSTALLED_MOCK_APP = $(INSTALL_DIR)/$(MOCK_BUNDLE)
 MOCK_DIST_ZIP = ImpossiBLE-Mock.zip
 

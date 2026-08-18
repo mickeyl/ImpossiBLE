@@ -141,11 +141,16 @@ struct DeviceEditorView: View {
     }
 }
 
-struct DeviceEditorWindowContent: View {
+public struct DeviceEditorWindowContent: View {
     let deviceId: UUID?
     @ObservedObject var store: MockStore
 
-    var body: some View {
+    public init(deviceId: UUID?, store: MockStore) {
+        self.deviceId = deviceId
+        self.store = store
+    }
+
+    public var body: some View {
         if let deviceId, let idx = store.devices.firstIndex(where: { $0.id == deviceId }) {
             DeviceEditorView(device: $store.devices[idx], onSave: { store.save() })
         } else {
@@ -161,23 +166,25 @@ struct DeviceEditorWindowContent: View {
     }
 }
 
-struct DeviceEditorWindowActivator: NSViewRepresentable {
-    final class Coordinator {
+public struct DeviceEditorWindowActivator: NSViewRepresentable {
+    public init() { }
+
+    public final class Coordinator {
         var didActivate = false
         var attempts = 0
     }
 
-    func makeCoordinator() -> Coordinator {
+    public func makeCoordinator() -> Coordinator {
         Coordinator()
     }
 
-    func makeNSView(context: Context) -> NSView {
+    public func makeNSView(context: Context) -> NSView {
         let view = NSView()
         activateWhenReady(view, coordinator: context.coordinator)
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
+    public func updateNSView(_ nsView: NSView, context: Context) {
         activateWhenReady(nsView, coordinator: context.coordinator)
     }
 

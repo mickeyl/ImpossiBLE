@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct CaptureSheet: View {
+public struct CaptureSheet: View {
     @ObservedObject var store: MockStore
     var onClose: (() -> Void)?
 
@@ -15,6 +15,11 @@ struct CaptureSheet: View {
     @State private var excludedDeviceIDs = Set<String>()
     @State private var isSavingConfiguration = false
 
+    public init(store: MockStore, onClose: (() -> Void)? = nil) {
+        self.store = store
+        self.onClose = onClose
+    }
+
     private var filteredDevices: [CapturedDevice] {
         capture.devices.filter(matchesFilters)
     }
@@ -23,7 +28,7 @@ struct CaptureSheet: View {
         filteredDevices.filter { !excludedDeviceIDs.contains($0.id) }
     }
 
-    var body: some View {
+    public var body: some View {
         VStack(spacing: 0) {
             header
             Divider()

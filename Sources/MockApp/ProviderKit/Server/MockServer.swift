@@ -23,15 +23,15 @@ struct ClientSuppliedConfiguration: Equatable {
 /// socket-ownership guard — lives in SimBridgeKit's `ProtocolServer`. Every
 /// handler here runs on the transport's I/O queue, which also guards all
 /// mutable state; UI-facing state is published on the main thread.
-final class MockServer: ObservableObject {
-    enum ServeMode: Sendable {
+public final class MockServer: ObservableObject {
+    public enum ServeMode: Sendable {
         case mock
         case passthrough
     }
 
     /// Socket lifecycle, connection status, client identity, and the activity
     /// line are published by the transport; observe it directly.
-    let transport: ProtocolServer
+    public let transport: ProtocolServer
 
     @Published var connectedDeviceIDs: Set<String> = []
     /// Set while the connected client supplies its own devices. Published in
@@ -40,8 +40,8 @@ final class MockServer: ObservableObject {
     @Published private(set) var clientSuppliedConfiguration: ClientSuppliedConfiguration?
     @Published var pairedDeviceIDs: Set<String> = []
 
-    weak var store: MockStore?
-    let passthroughActivity = PassthroughActivityMonitor()
+    public weak var store: MockStore?
+    public let passthroughActivity = PassthroughActivityMonitor()
 
     // Guarded by the transport's I/O queue
     private var serveMode: ServeMode = .mock
@@ -63,7 +63,7 @@ final class MockServer: ObservableObject {
 
     private static let serverEnabledKey = "ServerEnabled"
 
-    init(autoStart: Bool = true) {
+    public init(autoStart: Bool = true) {
         transport = ProtocolServer(
             socketPath: kSocketPath,
             name: "ImpossiBLE-Mock",
@@ -84,7 +84,7 @@ final class MockServer: ObservableObject {
         }
     }
 
-    func start(mode: ServeMode, completion: (() -> Void)? = nil) {
+    public func start(mode: ServeMode, completion: (() -> Void)? = nil) {
         UserDefaults.standard.set(true, forKey: Self.serverEnabledKey)
         transport.performOnIOQueue { [self] in
             serveMode = mode
@@ -95,7 +95,7 @@ final class MockServer: ObservableObject {
         transport.start(completion: completion)
     }
 
-    func stop(completion: (() -> Void)? = nil) {
+    public func stop(completion: (() -> Void)? = nil) {
         UserDefaults.standard.set(false, forKey: Self.serverEnabledKey)
         transport.stop(completion: completion)
     }
