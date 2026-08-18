@@ -8,6 +8,27 @@
 - `SampleApp` is an iOS sample Xcode project that imports the local package and uses normal CoreBluetooth APIs.
 - `Sources/ImpossiBLE/CBSMockConfiguration.m` is the only client-side file with a public API. Everything else activates itself; these three functions exist so a test can supply its own virtual peripherals.
 
+## Socket discipline
+
+Since the mock app is the single provider, **everything** — including mode
+switching — runs through `MockServer`'s serial `ioQueue`. Two rules keep that
+queue alive (learned the hard way; CAMouflage's AGENTS carries the same
+warning):
+
+- **`SO_NOSIGPIPE` on every accepted client fd** (plus a process-wide
+  `SIG_IGN` in `MockServer.init`). Takeover and teardown races routinely make
+  a final write hit a closed peer; the default SIGPIPE action would kill the
+  whole provider instead of returning a write error.
+- **`SO_SNDTIMEO` (2 s) + a 256 KB `SO_SNDBUF` on every accepted client fd**,
+  and a failed write disconnects the client (`handleClientDisconnect`). A
+  client that stops reading — typically a suspended simulator app — otherwise
+  fills the send buffer and wedges the ioQueue in a blocking `write()`,
+  which freezes the entire provider including the mode picker. The
+  disconnected client's library auto-reconnects when it becomes healthy again.
+
+Both live in `configureClientSocket(_:)`; keep calling it for every accepted
+connection.
+
 ## Client takeover semantics
 
 **Single client, last-connection-wins** (aligned with CAMouflage in 3.0.0): a new connection *takes over* rather than being rejected. `MockServer.acceptClient()` sends `connectionRejected {code: clientBusy}` to the **previous** client (whose library then stops auto-reconnecting), closes it, and tears down everything it owned — mock state, client-supplied configuration, and the bridge's scans/connections/L2CAP channels (`tearDownClientState()`). This makes relaunching the app or switching simulators "just work"; to use an older simulator again, relaunch its app. The wire code stays `clientBusy` so pre-3.0 libraries handle eviction identically.

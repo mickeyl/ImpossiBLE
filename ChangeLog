@@ -34,6 +34,12 @@ modes. The wire format is unchanged; existing client libraries keep working.
 * The mock app now carries the Bluetooth usage description and — for Hardened
   Runtime release builds — the com.apple.security.device.bluetooth
   entitlement. First Passthrough activation prompts for Bluetooth consent.
+* Socket hardening for the single-provider architecture: client fds get
+  SO_NOSIGPIPE (a write racing a client teardown returns an error instead of
+  killing the provider) and SO_SNDTIMEO plus a 256 KB send buffer — a client
+  that stops reading (e.g. a suspended simulator app) is disconnected after
+  2 seconds instead of wedging the provider's I/O queue, and its library
+  auto-reconnects once it is healthy again.
 * Makefile: all helper targets removed; `make install`/`make mock-run` install
   and start only the mock app. `make uninstall` also removes a previously
   installed impossible-helper. New mock-status and mock-log targets.

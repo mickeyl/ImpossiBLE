@@ -95,6 +95,9 @@ final class MockServer: ObservableObject {
     private static let serverEnabledKey = "ServerEnabled"
 
     init(autoStart: Bool = true) {
+        // Belt and braces next to the per-fd SO_NOSIGPIPE: a write that races a
+        // client teardown must return an error, not kill the whole provider.
+        signal(SIGPIPE, SIG_IGN)
         if autoStart, UserDefaults.standard.bool(forKey: Self.serverEnabledKey) {
             start(mode: .mock)
         }
@@ -223,6 +226,8 @@ final class MockServer: ObservableObject {
         // The previous client is told it was superseded (its library then stops
         // auto-reconnecting) and its scans, connections, and channels are torn
         // down — otherwise the new client would inherit live hardware state.
+        configureClientSocket(fd)
+
         if clientFd >= 0 {
             let newcomer = peerClientInfo(for: fd)
             sendConnectionRejected(to: clientFd, supersededBy: newcomer)
@@ -268,28 +273,8 @@ final class MockServer: ObservableObject {
         var buf = [UInt8](repeating: 0, count: 2048)
         let n = read(fd, &buf, buf.count)
         if n <= 0 {
-            guard fd == clientFd, generation == clientGeneration else {
-                return
-            }
-            readSource?.cancel()
-            readSource = nil
-            close(fd)
-            clientFd = -1
-            clientInfo = nil
-            publishConnectedClient(nil)
-            scanTimer?.cancel()
-            scanTimer = nil
-            scanActive = false
-            connectedPeripherals.removeAll()
-            pairedPeripherals.removeAll()
-            // An uploaded configuration belongs to the connection that sent it.
-            clearClientSuppliedConfiguration()
-            passthroughBridge?.reset()
-            clearPassthroughActivity()
-
-            publishDeviceState()
-            publishStatus(.listening)
-            log("Client disconnected")
+            guard generation == clientGeneration else { return }
+            handleClientDisconnect(fd: fd, reason: "Client disconnected")
             return
         }
         readBuffer.append(contentsOf: buf[0..<n])
@@ -306,13 +291,45 @@ final class MockServer: ObservableObject {
 
     // MARK: - Send (called on ioQueue)
 
+    /// Drops the client fd on both socket options: without SO_NOSIGPIPE a write
+    /// racing a client teardown kills the process, and without a send timeout a
+    /// client that stops reading (a suspended simulator app) fills the send
+    /// buffer and wedges the ioQueue in a blocking write() — taking mode
+    /// switching down with it, since everything runs through this queue now.
+    private func configureClientSocket(_ fd: Int32) {
+        var on: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+        var sendBufferSize: Int32 = 256 * 1024
+        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sendBufferSize, socklen_t(MemoryLayout<Int32>.size))
+        var timeout = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    }
+
     private func send(_ msg: [String: Any]) {
         guard let data = try? JSONSerialization.data(withJSONObject: msg),
               clientFd >= 0 else { return }
         var payload = data
         payload.append(UInt8(ascii: "\n"))
         let fd = clientFd
-        write(payload, to: fd)
+        guard write(payload, to: fd) else {
+            handleClientDisconnect(fd: fd, reason: "Client stopped reading; disconnected")
+            return
+        }
+    }
+
+    /// Tear down the current client connection. Safe to call from the read
+    /// path and from a failed write alike; stale fds are ignored.
+    private func handleClientDisconnect(fd: Int32, reason: String) {
+        guard fd == clientFd else { return }
+        readSource?.cancel()
+        readSource = nil
+        close(fd)
+        clientFd = -1
+        clientInfo = nil
+        publishConnectedClient(nil)
+        tearDownClientState()
+        publishStatus(.listening)
+        log(reason)
     }
 
     /// Sent to the *previous* client when a new connection takes over. The code
@@ -332,7 +349,8 @@ final class MockServer: ObservableObject {
         guard let data = try? JSONSerialization.data(withJSONObject: msg) else { return }
         var payload = data
         payload.append(UInt8(ascii: "\n"))
-        write(payload, to: fd)
+        // Best effort: the fd is closed right after, a failed write is fine.
+        _ = write(payload, to: fd)
     }
 
     /// Everything the evicted client owned, in both modes.
@@ -378,15 +396,16 @@ final class MockServer: ObservableObject {
         }
     }
 
-    private func write(_ payload: Data, to fd: Int32) {
+    private func write(_ payload: Data, to fd: Int32) -> Bool {
         payload.withUnsafeBytes { ptr in
-            guard let base = ptr.baseAddress else { return }
+            guard let base = ptr.baseAddress else { return false }
             var written = 0
             while written < payload.count {
                 let n = Darwin.write(fd, base.advanced(by: written), payload.count - written)
-                if n <= 0 { break }
+                if n <= 0 { return false }
                 written += n
             }
+            return true
         }
     }
 
