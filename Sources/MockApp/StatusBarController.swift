@@ -106,9 +106,9 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
     private func observeIconState() {
         // @Published emits in willSet, so reading server.trafficActive inside the sink would
         // see the old value. Hop through the main queue so updateIcon() runs after didSet.
-        server.$status.receive(on: DispatchQueue.main)
+        server.transport.$status.receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
-        server.$trafficActive.receive(on: DispatchQueue.main)
+        server.transport.$trafficActive.receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
         modeController.$mode.receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.updateIcon() }.store(in: &cancellables)
@@ -127,7 +127,7 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
         let image = FontAwesome.brandImage(
             FontAwesome.bluetoothB,
             size: 16,
-            active: server.trafficActive || server.passthroughActivity.trafficActive,
+            active: server.transport.trafficActive || server.passthroughActivity.trafficActive,
             mode: menuBarMode
         )
         if button.image !== image {
@@ -136,8 +136,12 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     private var menuBarMode: FontAwesome.MenuBarMode {
-        guard server.status != .stopped else { return .off }
-        return modeController.mode == .passthrough ? .passthrough : .mock
+        switch server.transport.status {
+            case .stopped, .blocked:
+                .off
+            case .listening, .clientConnected:
+                modeController.mode == .passthrough ? .passthrough : .mock
+        }
     }
 
     @objc private func toggleControlWindow() {
@@ -162,6 +166,7 @@ final class StatusBarController: NSObject, ObservableObject, NSWindowDelegate {
         let root = MockMenuContent(
             store: store,
             server: server,
+            transport: server.transport,
             activity: server.passthroughActivity,
             controller: modeController,
             onDismiss: { [weak self] in self?.hideControlWindow() },

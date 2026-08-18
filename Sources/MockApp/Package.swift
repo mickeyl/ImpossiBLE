@@ -4,7 +4,9 @@ import PackageDescription
 let package = Package(
     name: "ImpossiBLE-Mock",
     platforms: [.macOS("15.0")],
-    dependencies: [],
+    dependencies: [
+        .package(url: "https://github.com/mickeyl/SimBridgeKit.git", from: "0.1.1"),
+    ],
     targets: [
         .target(
             name: "ImpossiBLEPassthroughCore",
@@ -16,7 +18,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "ImpossiBLE-Mock",
-            dependencies: ["ImpossiBLEPassthroughCore"],
+            dependencies: [
+                "ImpossiBLEPassthroughCore",
+                .product(name: "SimBridgeServer", package: "SimBridgeKit"),
+            ],
             path: ".",
             exclude: [
                 "PassthroughCore",

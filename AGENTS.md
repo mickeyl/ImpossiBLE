@@ -3,35 +3,29 @@
 ## Project Shape
 
 - `Sources/ImpossiBLE` is the simulator-side Swift package library. It swizzles CoreBluetooth APIs at `+load` time and sends newline-delimited JSON to `/tmp/impossible.sock`. The socket is opened lazily on the first `CBCentralManager` instantiation (via a `dispatch_once` in `cbs_post_init`), so linking ImpossiBLE without using CoreBluetooth does not contact the provider. The connection layer (`CBSConnection`) auto-reconnects, sends a `hello {clientVersion, bundleId, pid}` handshake on connect (`kCBSLibraryVersion` — bump on release), and drives `CBManagerState` transitions (`poweredOn`/`poweredOff`) based on socket connectivity.
-- `Sources/MockApp` builds `ImpossiBLE-Mock.app`, the host-side menu bar provider and **single owner of the socket in both modes**. It has its own `Package.swift` with two targets: the Swift executable, and `ImpossiBLEPassthroughCore`, an ObjC library target containing `CBSPassthroughBridge` — the former `impossible-helper` daemon minus its socket server. `MockServer` owns the socket and routes by `serveMode`: Mock answers from `MockStore`/client fixtures, Passthrough forwards every message to the bridge, which translates to real CoreBluetooth calls and emits replies through its `messageHandler`. There is no separate helper process anymore (removed in 3.0.0). Font resources (FontAwesome Brands) are bundled via SPM resource rules. The status item is implemented with AppKit (`StatusBarController`) rather than SwiftUI `MenuBarExtra` so the control panel can remain open while other apps are active.
+- `Sources/MockApp` builds `ImpossiBLE-Mock.app`, the host-side menu bar provider and **single owner of the socket in both modes**. It has its own `Package.swift` with two targets: the Swift executable, and `ImpossiBLEPassthroughCore`, an ObjC library target containing `CBSPassthroughBridge` — the former `impossible-helper` daemon minus its socket server. The transport (socket lifecycle, NDJSON framing, hello handshake, last-connection-wins takeover, client-socket hardening, socket-ownership guard) is SimBridgeKit's `ProtocolServer` (`MockServer.transport`, URL dependency on github.com/mickeyl/SimBridgeKit); `MockServer` is the domain layer on top and routes by `serveMode`: Mock answers from `MockStore`/client fixtures, Passthrough forwards every message to the bridge, which translates to real CoreBluetooth calls and emits replies through its `messageHandler`. All `MockServer` handlers run on the transport's I/O queue, which also guards its mutable state. There is no separate helper process anymore (removed in 3.0.0). Font resources (FontAwesome Brands) are bundled via SPM resource rules. The status item is implemented with AppKit (`StatusBarController`) rather than SwiftUI `MenuBarExtra` so the control panel can remain open while other apps are active.
 - Passthrough needs `NSBluetoothAlwaysUsageDescription` (in `Resources/Info.plist`) and — under the Hardened Runtime of release builds — `com.apple.security.device.bluetooth` in `Resources/entitlements.plist`. Missing entitlement is the classic "works in debug (ad-hoc, Hardened Runtime not enforced), denied in release" trap. Ad-hoc dev builds get a fresh identity each rebuild, so macOS re-prompts for Bluetooth consent.
 - `SampleApp` is an iOS sample Xcode project that imports the local package and uses normal CoreBluetooth APIs.
 - `Sources/ImpossiBLE/CBSMockConfiguration.m` is the only client-side file with a public API. Everything else activates itself; these three functions exist so a test can supply its own virtual peripherals.
 
-## Socket discipline
+## Socket discipline & takeover
 
-Since the mock app is the single provider, **everything** — including mode
-switching — runs through `MockServer`'s serial `ioQueue`. Two rules keep that
-queue alive (learned the hard way; CAMouflage's AGENTS carries the same
-warning):
+Both live in SimBridgeKit's `ProtocolServer` since the adoption — see that
+repo's AGENTS.md for the invariants (SO_NOSIGPIPE + send-timeout hardening,
+last-connection-wins takeover, socket-ownership guard). What matters on this
+side:
 
-- **`SO_NOSIGPIPE` on every accepted client fd** (plus a process-wide
-  `SIG_IGN` in `MockServer.init`). Takeover and teardown races routinely make
-  a final write hit a closed peer; the default SIGPIPE action would kill the
-  whole provider instead of returning a write error.
-- **`SO_SNDTIMEO` (2 s) + a 256 KB `SO_SNDBUF` on every accepted client fd**,
-  and a failed write disconnects the client (`handleClientDisconnect`). A
-  client that stops reading — typically a suspended simulator app — otherwise
-  fills the send buffer and wedges the ioQueue in a blocking `write()`,
-  which freezes the entire provider including the mode picker. The
-  disconnected client's library auto-reconnects when it becomes healthy again.
-
-Both live in `configureClientSocket(_:)`; keep calling it for every accepted
-connection.
-
-## Client takeover semantics
-
-**Single client, last-connection-wins** (aligned with CAMouflage in 3.0.0): a new connection *takes over* rather than being rejected. `MockServer.acceptClient()` sends `connectionRejected {code: clientBusy}` to the **previous** client (whose library then stops auto-reconnecting), closes it, and tears down everything it owned — mock state, client-supplied configuration, and the bridge's scans/connections/L2CAP channels (`tearDownClientState()`). This makes relaunching the app or switching simulators "just work"; to use an older simulator again, relaunch its app. The wire code stays `clientBusy` so pre-3.0 libraries handle eviction identically.
+- `MockServer` never touches fds. Replies go through `transport.send(_:)`,
+  domain events surface via `transport.note(_:)`, and
+  `transport.onClientTeardown` drives `tearDownClientState()` — mock state,
+  client-supplied configuration, and the bridge's scans/connections/L2CAP
+  channels are dropped on disconnect, takeover, and stop alike.
+- The ownership guard means a second provider instance shows **Blocked** in
+  the panel (orange) instead of stealing `/tmp/impossible.sock` from a
+  running one.
+- The wire code for takeover stays `clientBusy`, so pre-3.0 libraries handle
+  eviction identically; the evicted library stops auto-reconnecting — to use
+  an older simulator again, relaunch its app.
 
 ## Client-Supplied Mock Configurations
 

@@ -1,30 +1,8 @@
 import Foundation
 import ImpossiBLEPassthroughCore
+import SimBridgeServer
 
 private let kSocketPath = "/tmp/impossible.sock"
-
-struct SocketClientInfo: Equatable {
-    let pid: pid_t
-    let processName: String
-    /// Reported by the client's `hello` message; nil for pre-3.0 libraries.
-    var libraryVersion: String? = nil
-    var bundleId: String? = nil
-
-    var displayText: String {
-        "\(processName) (PID \(pid))"
-    }
-
-    var messageSuffix: String {
-        "pid=\(pid), process=\(processName)"
-    }
-
-    var wireValue: [String: Any] {
-        [
-            "pid": Int(pid),
-            "processName": processName,
-        ]
-    }
-}
 
 /// A configuration handed over by the connected app, shown in place of the
 /// user's selection while it is active.
@@ -36,26 +14,25 @@ struct ClientSuppliedConfiguration: Equatable {
     var sourceDescription: String { client?.displayText ?? "connected app" }
 }
 
-/// The single owner of `/tmp/impossible.sock`, serving the ImpossiBLE wire
+/// The domain layer behind `/tmp/impossible.sock`, serving the ImpossiBLE wire
 /// protocol in one of two modes: answering from mock data, or forwarding to
 /// real Mac Bluetooth hardware through the in-process `CBSPassthroughBridge`.
-/// All socket I/O runs on `ioQueue`. UI-facing state is published on the main thread.
+///
+/// The transport itself — socket lifecycle, NDJSON framing, hello handshake,
+/// last-connection-wins takeover, client-socket hardening, and the
+/// socket-ownership guard — lives in SimBridgeKit's `ProtocolServer`. Every
+/// handler here runs on the transport's I/O queue, which also guards all
+/// mutable state; UI-facing state is published on the main thread.
 final class MockServer: ObservableObject {
-    enum Status: Equatable, Sendable {
-        case stopped
-        case listening
-        case clientConnected
-    }
-
     enum ServeMode: Sendable {
         case mock
         case passthrough
     }
 
-    @Published var status: Status = .stopped
-    @Published var lastActivity: String = ""
-    @Published var trafficActive: Bool = false
-    @Published private(set) var connectedClient: SocketClientInfo?
+    /// Socket lifecycle, connection status, client identity, and the activity
+    /// line are published by the transport; observe it directly.
+    let transport: ProtocolServer
+
     @Published var connectedDeviceIDs: Set<String> = []
     /// Set while the connected client supplies its own devices. Published in
     /// full — not just the name — because the device list would otherwise show
@@ -63,16 +40,12 @@ final class MockServer: ObservableObject {
     @Published private(set) var clientSuppliedConfiguration: ClientSuppliedConfiguration?
     @Published var pairedDeviceIDs: Set<String> = []
 
-    private let ioQueue = DispatchQueue(label: "impossible.mock.io")
+    weak var store: MockStore?
+    let passthroughActivity = PassthroughActivityMonitor()
 
-    // Guarded by ioQueue
-    private var serverFd: Int32 = -1
-    private var clientFd: Int32 = -1
-    private var clientInfo: SocketClientInfo?
-    private var clientGeneration: UInt64 = 0
-    private var acceptSource: DispatchSourceRead?
-    private var readSource: DispatchSourceRead?
-    private var readBuffer = Data()
+    // Guarded by the transport's I/O queue
+    private var serveMode: ServeMode = .mock
+    private var currentClient: SocketClientInfo?
     private var connectedPeripherals = Set<String>()
     private var pairedPeripherals = Set<String>()
     private var scanActive = false
@@ -84,20 +57,28 @@ final class MockServer: ObservableObject {
     /// memory only: it must never overwrite the user's saved configurations,
     /// and it dies with the connection that supplied it.
     private var clientSuppliedDevices: [MockDevice]?
-    private var serveMode: ServeMode = .mock
     /// Created on first Passthrough start and kept for the process lifetime;
     /// instantiating it triggers the one-time macOS Bluetooth consent prompt.
     private var passthroughBridge: CBSPassthroughBridge?
 
-    weak var store: MockStore?
-    let passthroughActivity = PassthroughActivityMonitor()
-
     private static let serverEnabledKey = "ServerEnabled"
 
     init(autoStart: Bool = true) {
-        // Belt and braces next to the per-fd SO_NOSIGPIPE: a write that races a
-        // client teardown must return an error, not kill the whole provider.
-        signal(SIGPIPE, SIG_IGN)
+        transport = ProtocolServer(
+            socketPath: kSocketPath,
+            name: "ImpossiBLE-Mock",
+            appVersion: AppVersion.current
+        )
+        transport.onMessage = { [weak self] message in
+            self?.handleMessage(message)
+        }
+        transport.onClientConnected = { [weak self] client in
+            self?.handleClientConnected(client)
+        }
+        transport.onClientTeardown = { [weak self] _ in
+            self?.tearDownClientState()
+        }
+
         if autoStart, UserDefaults.standard.bool(forKey: Self.serverEnabledKey) {
             start(mode: .mock)
         }
@@ -105,262 +86,39 @@ final class MockServer: ObservableObject {
 
     func start(mode: ServeMode, completion: (() -> Void)? = nil) {
         UserDefaults.standard.set(true, forKey: Self.serverEnabledKey)
-        ioQueue.async { [self] in
+        transport.performOnIOQueue { [self] in
             serveMode = mode
             if mode == .passthrough {
                 preparePassthroughBridge()
             }
-            defer {
-                if let completion {
-                    DispatchQueue.main.async(execute: completion)
-                }
-            }
-            guard serverFd < 0 else { return }
-
-            let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-            guard fd >= 0 else {
-                NSLog("ImpossiBLE-Mock: socket() failed")
-                return
-            }
-
-            unlink(kSocketPath)
-
-            var addr = sockaddr_un()
-            addr.sun_family = sa_family_t(AF_UNIX)
-            let pathBytes = kSocketPath.utf8CString
-            withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
-                let raw = UnsafeMutableRawPointer(ptr)
-                pathBytes.withUnsafeBufferPointer { buf in
-                    raw.copyMemory(from: buf.baseAddress!, byteCount: min(buf.count, 104))
-                }
-            }
-
-            let bindResult = withUnsafePointer(to: &addr) { ptr in
-                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                    bind(fd, sa, socklen_t(MemoryLayout<sockaddr_un>.size))
-                }
-            }
-            guard bindResult == 0 else {
-                NSLog("ImpossiBLE-Mock: bind() failed: %d", errno)
-                close(fd)
-                return
-            }
-
-            guard listen(fd, 2) == 0 else {
-                NSLog("ImpossiBLE-Mock: listen() failed")
-                close(fd)
-                return
-            }
-
-            serverFd = fd
-            publishStatus(.listening)
-            log("Listening")
-
-            let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: ioQueue)
-            source.setEventHandler { [weak self] in
-                self?.acceptClient()
-            }
-            source.setCancelHandler {
-                close(fd)
-            }
-            source.resume()
-            acceptSource = source
         }
+        transport.start(completion: completion)
     }
 
     func stop(completion: (() -> Void)? = nil) {
         UserDefaults.standard.set(false, forKey: Self.serverEnabledKey)
-        ioQueue.async { [self] in
-            let hadServer = serverFd >= 0
-
-            scanTimer?.cancel()
-            scanTimer = nil
-            scanActive = false
-
-            readSource?.cancel()
-            readSource = nil
-            if clientFd >= 0 {
-                close(clientFd)
-                clientFd = -1
-            }
-            clientInfo = nil
-            publishConnectedClient(nil)
-            clientGeneration &+= 1
-
-            acceptSource?.cancel()
-            acceptSource = nil
-            serverFd = -1
-
-            if hadServer {
-                unlink(kSocketPath)
-            }
-
-            connectedPeripherals.removeAll()
-            pairedPeripherals.removeAll()
-            writtenCharValues.removeAll()
-            writtenDescValues.removeAll()
-            notifyingCharacteristics.removeAll()
-            readBuffer.removeAll()
-            passthroughBridge?.reset()
-            clearPassthroughActivity()
-
-            publishDeviceState()
-            publishStatus(.stopped)
-            log("Stopped")
-
-            if let completion {
-                DispatchQueue.main.async {
-                    completion()
-                }
-            }
-        }
+        transport.stop(completion: completion)
     }
 
-    // MARK: - Connection (called on ioQueue)
-
-    private func acceptClient() {
-        let fd = accept(serverFd, nil, nil)
-        guard fd >= 0 else { return }
-
-        // Last-connection-wins: the freshly launched simulator app takes over.
-        // The previous client is told it was superseded (its library then stops
-        // auto-reconnecting) and its scans, connections, and channels are torn
-        // down — otherwise the new client would inherit live hardware state.
-        configureClientSocket(fd)
-
-        if clientFd >= 0 {
-            let newcomer = peerClientInfo(for: fd)
-            sendConnectionRejected(to: clientFd, supersededBy: newcomer)
-            readSource?.cancel()
-            readSource = nil
-            close(clientFd)
-            clientFd = -1
-            let suffix = clientInfo?.messageSuffix ?? "pid=0, process=unknown"
-            clientInfo = nil
-            tearDownClientState()
-            log("Client superseded (\(suffix))")
-        }
-        clientFd = fd
-        clientInfo = peerClientInfo(for: fd)
-        publishConnectedClient(clientInfo)
-        clientGeneration &+= 1
-        let generation = clientGeneration
-        readBuffer.removeAll()
-        connectedPeripherals.removeAll()
-        pairedPeripherals.removeAll()
-        writtenCharValues.removeAll()
-        writtenDescValues.removeAll()
-        notifyingCharacteristics.removeAll()
-        clearClientSuppliedConfiguration()
-        scanActive = false
-        scanTimer?.cancel()
-        scanTimer = nil
-
-        publishStatus(.clientConnected)
-        let suffix = clientInfo?.messageSuffix ?? "pid=0, process=unknown"
-        log("Client connected \(suffix)")
-
-        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: ioQueue)
-        source.setEventHandler { [weak self] in
-            self?.readFromClient(fd: fd, generation: generation)
-        }
-        source.setCancelHandler { }
-        source.resume()
-        readSource = source
+    func terminateConnectedClient() {
+        transport.terminateConnectedClient()
     }
 
-    private func readFromClient(fd: Int32, generation: UInt64) {
-        var buf = [UInt8](repeating: 0, count: 2048)
-        let n = read(fd, &buf, buf.count)
-        if n <= 0 {
-            guard generation == clientGeneration else { return }
-            handleClientDisconnect(fd: fd, reason: "Client disconnected")
-            return
-        }
-        readBuffer.append(contentsOf: buf[0..<n])
+    // MARK: - Connection lifecycle (called on the transport's I/O queue)
 
-        while let newlineIndex = readBuffer.firstIndex(of: UInt8(ascii: "\n")) {
-            let lineData = readBuffer[readBuffer.startIndex..<newlineIndex]
-            readBuffer.removeSubrange(readBuffer.startIndex...newlineIndex)
-            if lineData.isEmpty { continue }
-            if let msg = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] {
-                handleMessage(msg)
-            }
-        }
-    }
-
-    // MARK: - Send (called on ioQueue)
-
-    /// Drops the client fd on both socket options: without SO_NOSIGPIPE a write
-    /// racing a client teardown kills the process, and without a send timeout a
-    /// client that stops reading (a suspended simulator app) fills the send
-    /// buffer and wedges the ioQueue in a blocking write() — taking mode
-    /// switching down with it, since everything runs through this queue now.
-    private func configureClientSocket(_ fd: Int32) {
-        var on: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
-        var sendBufferSize: Int32 = 256 * 1024
-        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sendBufferSize, socklen_t(MemoryLayout<Int32>.size))
-        var timeout = timeval(tv_sec: 2, tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-    }
-
-    private func send(_ msg: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: msg),
-              clientFd >= 0 else { return }
-        var payload = data
-        payload.append(UInt8(ascii: "\n"))
-        let fd = clientFd
-        guard write(payload, to: fd) else {
-            handleClientDisconnect(fd: fd, reason: "Client stopped reading; disconnected")
-            return
-        }
-    }
-
-    /// Tear down the current client connection. Safe to call from the read
-    /// path and from a failed write alike; stale fds are ignored.
-    private func handleClientDisconnect(fd: Int32, reason: String) {
-        guard fd == clientFd else { return }
-        readSource?.cancel()
-        readSource = nil
-        close(fd)
-        clientFd = -1
-        clientInfo = nil
-        publishConnectedClient(nil)
+    private func handleClientConnected(_ client: SocketClientInfo?) {
+        currentClient = client
         tearDownClientState()
-        publishStatus(.listening)
-        log(reason)
     }
 
-    /// Sent to the *previous* client when a new connection takes over. The code
-    /// stays "clientBusy" so pre-3.0 libraries handle the eviction identically.
-    private func sendConnectionRejected(to fd: Int32, supersededBy newcomer: SocketClientInfo?) {
-        let suffix = newcomer?.messageSuffix ?? "pid=0, process=unknown"
-        let msg: [String: Any] = [
-            "type": "connectionRejected",
-            "code": "clientBusy",
-            "message": "superseded by a newer ImpossiBLE client (\(suffix))",
-            "activeClient": newcomer?.wireValue ?? [
-                "pid": 0,
-                "processName": "unknown",
-            ],
-            "retry": false,
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: msg) else { return }
-        var payload = data
-        payload.append(UInt8(ascii: "\n"))
-        // Best effort: the fd is closed right after, a failed write is fine.
-        _ = write(payload, to: fd)
-    }
-
-    /// Everything the evicted client owned, in both modes.
+    /// Everything the previous client owned, in both modes. Runs on connect,
+    /// disconnect, takeover, and stop alike.
     private func tearDownClientState() {
         connectedPeripherals.removeAll()
         pairedPeripherals.removeAll()
         writtenCharValues.removeAll()
         writtenDescValues.removeAll()
         notifyingCharacteristics.removeAll()
-        readBuffer.removeAll()
         scanTimer?.cancel()
         scanTimer = nil
         scanActive = false
@@ -375,9 +133,9 @@ final class MockServer: ObservableObject {
         let bridge = CBSPassthroughBridge()
         bridge.messageHandler = { [weak self] message in
             guard let self else { return }
-            self.ioQueue.async {
+            self.transport.performOnIOQueue {
                 guard self.serveMode == .passthrough else { return }
-                self.send(message)
+                self.transport.send(message)
             }
         }
         bridge.activityHandler = { [weak self] peripheralId, name, operation, detail in
@@ -385,7 +143,7 @@ final class MockServer: ObservableObject {
             DispatchQueue.main.async {
                 self.passthroughActivity.record(id: peripheralId, name: name, operation: operation, detail: detail)
             }
-            self.log("\(name.isEmpty ? peripheralId.prefix(8) : Substring(name)): \(operation)")
+            self.transport.note("\(name.isEmpty ? peripheralId.prefix(8) : Substring(name)): \(operation)")
         }
         passthroughBridge = bridge
     }
@@ -396,54 +154,10 @@ final class MockServer: ObservableObject {
         }
     }
 
-    private func write(_ payload: Data, to fd: Int32) -> Bool {
-        payload.withUnsafeBytes { ptr in
-            guard let base = ptr.baseAddress else { return false }
-            var written = 0
-            while written < payload.count {
-                let n = Darwin.write(fd, base.advanced(by: written), payload.count - written)
-                if n <= 0 { return false }
-                written += n
-            }
-            return true
-        }
-    }
-
-    private func peerClientInfo(for fd: Int32) -> SocketClientInfo? {
-        var pid = pid_t(0)
-        var len = socklen_t(MemoryLayout<pid_t>.size)
-        guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &len) == 0, pid > 0 else {
-            return nil
-        }
-
-        var nameBuffer = [CChar](repeating: 0, count: 4096)
-        let result = proc_name(pid, &nameBuffer, UInt32(nameBuffer.count))
-        let processName = result > 0 ? String(cString: nameBuffer) : "unknown"
-        return SocketClientInfo(pid: pid, processName: processName)
-    }
-
-    func terminateConnectedClient() {
-        ioQueue.async { [self] in
-            guard let pid = clientInfo?.pid, pid > 0 else { return }
-            if Darwin.kill(pid, SIGTERM) == 0 {
-                log("Terminating client pid=\(pid)")
-            } else {
-                log("Failed to terminate client pid=\(pid): errno \(errno)")
-            }
-        }
-    }
-
-    // MARK: - Protocol Handler (called on ioQueue)
+    // MARK: - Protocol Handler (called on the transport's I/O queue)
 
     private func handleMessage(_ msg: [String: Any]) {
         guard let type = msg["type"] as? String else { return }
-
-        log("recv: \(type)")
-
-        if type == "hello" {
-            handleHello(msg)
-            return
-        }
 
         if serveMode == .passthrough {
             passthroughBridge?.handleMessage(msg)
@@ -473,24 +187,6 @@ final class MockServer: ObservableObject {
         default:
             NSLog("ImpossiBLE-Mock: unknown message type: %@", type)
         }
-    }
-
-    // MARK: - Hello
-
-    private func handleHello(_ msg: [String: Any]) {
-        let version = msg["clientVersion"] as? String
-        let bundleId = msg["bundleId"] as? String
-        if var info = clientInfo {
-            info.libraryVersion = version
-            info.bundleId = bundleId
-            clientInfo = info
-            publishConnectedClient(info)
-        }
-        let appVersion = AppVersion.current
-        if let version, version != appVersion {
-            NSLog("ImpossiBLE-Mock: client library %@ does not match app %@ — pin them together", version, appVersion)
-        }
-        log("Client hello — library \(version ?? "unknown") (\(bundleId ?? "?"))")
     }
 
     // MARK: - Helpers for main-thread store access
@@ -524,16 +220,16 @@ final class MockServer: ObservableObject {
             let published = ClientSuppliedConfiguration(
                 name: configuration.name,
                 devices: configuration.devices,
-                client: clientInfo
+                client: currentClient
             )
             DispatchQueue.main.async { self.clientSuppliedConfiguration = published }
             let name = configuration.name
-            log("Client supplied configuration '\(name)' with \(configuration.devices.count) device(s)")
+            transport.note("Client supplied configuration '\(name)' with \(configuration.devices.count) device(s)")
             sendMockConfigurationResult(ok: true, error: nil)
         } catch {
             // Report back rather than failing silently: a test that uploads a
             // malformed fixture would otherwise just see an empty scan.
-            log("Rejected client configuration: \(error.localizedDescription)")
+            transport.note("Rejected client configuration: \(error.localizedDescription)")
             sendMockConfigurationResult(ok: false, error: error.localizedDescription)
         }
     }
@@ -542,13 +238,13 @@ final class MockServer: ObservableObject {
         guard clientSuppliedDevices != nil else { return }
         clientSuppliedDevices = nil
         DispatchQueue.main.async { self.clientSuppliedConfiguration = nil }
-        log("Client configuration cleared; serving the selected configuration again")
+        transport.note("Client configuration cleared; serving the selected configuration again")
     }
 
     private func sendMockConfigurationResult(ok: Bool, error: String?) {
         var msg: [String: Any] = ["type": "didSetMockConfiguration", "ok": ok]
         if let error { msg["error"] = error }
-        send(msg)
+        transport.send(msg)
     }
 
     // MARK: - Scan
@@ -562,11 +258,14 @@ final class MockServer: ObservableObject {
         sendDiscoveries(serviceFilter: serviceFilter)
 
         scanTimer?.cancel()
-        let timer = DispatchSource.makeTimerSource(queue: ioQueue)
+        let timer = DispatchSource.makeTimerSource()
         timer.schedule(deadline: .now() + 1.0, repeating: 2.0)
         timer.setEventHandler { [weak self] in
-            guard let self, self.scanActive else { return }
-            self.sendDiscoveries(serviceFilter: serviceFilter)
+            guard let self else { return }
+            self.transport.performOnIOQueue {
+                guard self.scanActive else { return }
+                self.sendDiscoveries(serviceFilter: serviceFilter)
+            }
         }
         timer.resume()
         scanTimer = timer
@@ -608,7 +307,7 @@ final class MockServer: ObservableObject {
                 adv["kCBAdvDataManufacturerData"] = mfg.base64EncodedString()
             }
 
-            send([
+            transport.send([
                 "type": "didDiscover",
                 "id": device.id.uuidString,
                 "name": device.name,
@@ -623,12 +322,12 @@ final class MockServer: ObservableObject {
     private func handleConnect(_ msg: [String: Any]) {
         guard let uuidStr = msg["id"] as? String else { return }
         guard let device = fetchDevice(uuid: uuidStr), device.isConnectable else {
-            send(["type": "didFailConnect", "id": uuidStr, "error": "Device not connectable"])
+            transport.send(["type": "didFailConnect", "id": uuidStr, "error": "Device not connectable"])
             return
         }
         connectedPeripherals.insert(uuidStr)
         publishDeviceState()
-        send(["type": "didConnect", "id": uuidStr])
+        transport.send(["type": "didConnect", "id": uuidStr])
     }
 
     private func handleCancel(_ msg: [String: Any]) {
@@ -637,7 +336,7 @@ final class MockServer: ObservableObject {
         pairedPeripherals.remove(uuidStr)
         notifyingCharacteristics = notifyingCharacteristics.filter { !$0.hasPrefix(uuidStr) }
         publishDeviceState()
-        send([
+        transport.send([
             "type": "didDisconnect",
             "id": uuidStr,
             "error": "",
@@ -654,8 +353,8 @@ final class MockServer: ObservableObject {
         let filterUUIDs: [String]? = (rawFilter?.isEmpty == false) ? rawFilter!.map { $0.uppercased() } : nil
 
         guard let device = fetchDevice(uuid: uuidStr) else {
-            log("discoverServices: device not found for \(uuidStr)")
-            send(["type": "didDiscoverServices", "id": uuidStr, "services": [] as [[String: Any]], "error": "Device not found"])
+            transport.note("discoverServices: device not found for \(uuidStr)")
+            transport.send(["type": "didDiscoverServices", "id": uuidStr, "services": [] as [[String: Any]], "error": "Device not found"])
             return
         }
 
@@ -672,7 +371,7 @@ final class MockServer: ObservableObject {
             ])
         }
 
-        send([
+        transport.send([
             "type": "didDiscoverServices",
             "id": uuidStr,
             "services": servicesPayload,
@@ -685,7 +384,7 @@ final class MockServer: ObservableObject {
         let parts = serviceId.split(separator: ":")
         guard parts.count >= 1 else { return }
         let peripheralUUID = String(parts[0])
-        send([
+        transport.send([
             "type": "didDiscoverIncludedServices",
             "id": peripheralUUID,
             "serviceId": serviceId,
@@ -726,7 +425,7 @@ final class MockServer: ObservableObject {
             ])
         }
 
-        send([
+        transport.send([
             "type": "didDiscoverCharacteristics",
             "id": peripheralUUID,
             "serviceId": serviceId,
@@ -760,7 +459,7 @@ final class MockServer: ObservableObject {
             ])
         }
 
-        send([
+        transport.send([
             "type": "didDiscoverDescriptors",
             "id": peripheralUUID,
             "characteristicId": charId,
@@ -795,7 +494,7 @@ final class MockServer: ObservableObject {
             value = nil
         }
 
-        send([
+        transport.send([
             "type": "didUpdateValue",
             "id": peripheralUUID,
             "characteristicId": charId,
@@ -825,7 +524,7 @@ final class MockServer: ObservableObject {
 
         let writeType = (msg["writeType"] as? Int) ?? 0
         if writeType == 0 {
-            send([
+            transport.send([
                 "type": "didWriteValue",
                 "id": peripheralUUID,
                 "characteristicId": charId,
@@ -860,7 +559,7 @@ final class MockServer: ObservableObject {
             value = nil
         }
 
-        send([
+        transport.send([
             "type": "didUpdateDescriptorValue",
             "id": peripheralUUID,
             "descriptorId": descId,
@@ -880,7 +579,7 @@ final class MockServer: ObservableObject {
             writtenDescValues[descId] = Data(base64Encoded: b64)
         }
 
-        send([
+        transport.send([
             "type": "didWriteDescriptorValue",
             "id": peripheralUUID,
             "descriptorId": descId,
@@ -911,7 +610,7 @@ final class MockServer: ObservableObject {
             notifyingCharacteristics.remove(charId)
         }
 
-        send([
+        transport.send([
             "type": "didUpdateNotification",
             "id": peripheralUUID,
             "characteristicId": charId,
@@ -926,7 +625,7 @@ final class MockServer: ObservableObject {
         guard let uuidStr = msg["id"] as? String else { return }
         let device = fetchDevice(uuid: uuidStr)
 
-        send([
+        transport.send([
             "type": "didReadRSSI",
             "id": uuidStr,
             "rssi": device?.rssi ?? -50,
@@ -934,11 +633,11 @@ final class MockServer: ObservableObject {
         ])
     }
 
-    // MARK: - L2CAP (not supported)
+    // MARK: - L2CAP (not supported in mock mode)
 
     private func handleOpenL2CAP(_ msg: [String: Any]) {
         guard let uuidStr = msg["id"] as? String else { return }
-        send([
+        transport.send([
             "type": "didOpenL2CAP",
             "id": uuidStr,
             "channelId": "",
@@ -965,7 +664,7 @@ final class MockServer: ObservableObject {
             case .justWorks:
                 pairedPeripherals.insert(peripheralUUID)
                 publishDeviceState()
-                log("Auto-paired (Just Works): \(device.name)")
+                transport.note("Auto-paired (Just Works): \(device.name)")
                 return true
             case .passkey:
                 return false
@@ -973,7 +672,7 @@ final class MockServer: ObservableObject {
     }
 
     private func sendAuthError(type: String, peripheralUUID: String, idKey: String, idValue: String) {
-        send([
+        transport.send([
             "type": type,
             "id": peripheralUUID,
             idKey: idValue,
@@ -986,18 +685,6 @@ final class MockServer: ObservableObject {
 
     // MARK: - Utilities
 
-    private func publishStatus(_ newStatus: Status) {
-        DispatchQueue.main.async { [weak self] in
-            self?.status = newStatus
-        }
-    }
-
-    private func publishConnectedClient(_ client: SocketClientInfo?) {
-        DispatchQueue.main.async { [weak self] in
-            self?.connectedClient = client
-        }
-    }
-
     private func publishDeviceState() {
         let connected = connectedPeripherals
         let paired = pairedPeripherals
@@ -1005,25 +692,5 @@ final class MockServer: ObservableObject {
             self?.connectedDeviceIDs = connected
             self?.pairedDeviceIDs = paired
         }
-    }
-
-    private var pulseWorkItem: DispatchWorkItem?
-
-    private func log(_ message: String) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.lastActivity = message
-            self.pulseTraffic()
-        }
-    }
-
-    private func pulseTraffic() {
-        pulseWorkItem?.cancel()
-        trafficActive = true
-        let item = DispatchWorkItem { [weak self] in
-            self?.trafficActive = false
-        }
-        pulseWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: item)
     }
 }

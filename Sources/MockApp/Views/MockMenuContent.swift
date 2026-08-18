@@ -1,9 +1,11 @@
 import SwiftUI
 import AppKit
+import SimBridgeServer
 
 struct MockMenuContent: View {
     @ObservedObject var store: MockStore
     @ObservedObject var server: MockServer
+    @ObservedObject var transport: ProtocolServer
     @ObservedObject var activity: PassthroughActivityMonitor
     @ObservedObject var controller: ProviderModeController
     @Environment(\.dismiss) private var dismiss
@@ -220,10 +222,11 @@ struct MockMenuContent: View {
             case .off:
                 .secondary
             case .mock, .passthrough:
-                switch server.status {
+                switch transport.status {
                     case .stopped:         .secondary
                     case .listening:       .blue
                     case .clientConnected: .green
+                    case .blocked:         .orange
                 }
         }
     }
@@ -235,10 +238,11 @@ struct MockMenuContent: View {
     }
 
     private var statusText: String {
-        switch server.status {
+        switch transport.status {
             case .stopped:          "Stopped"
             case .listening:        "Listening"
             case .clientConnected:  "Client connected"
+            case .blocked:          "Blocked"
         }
     }
 
@@ -263,12 +267,15 @@ struct MockMenuContent: View {
     }
 
     private var providerStatusDetailText: String {
+        if case .blocked(let message) = transport.status, currentMode != .off {
+            return message
+        }
         switch currentMode {
             case .off:
                 return "No provider running"
             case .mock:
-                guard !server.lastActivity.isEmpty else { return deviceSummary }
-                return "\(deviceSummary) · \(server.lastActivity)"
+                guard !transport.lastActivity.isEmpty else { return deviceSummary }
+                return "\(deviceSummary) · \(transport.lastActivity)"
             case .passthrough:
                 let summary = passthroughDetailText
                 guard !activity.lastActivity.isEmpty else { return summary }
@@ -277,7 +284,7 @@ struct MockMenuContent: View {
     }
 
     private var providerClient: SocketClientInfo? {
-        currentMode == .off ? nil : server.connectedClient
+        currentMode == .off ? nil : transport.connectedClient
     }
 
     private func terminateProviderClient() {
@@ -286,7 +293,7 @@ struct MockMenuContent: View {
     }
 
     private var passthroughDetailText: String {
-        guard server.status != .stopped else { return "No passthrough provider running" }
+        guard transport.status != .stopped else { return "No passthrough provider running" }
         let devices = activity.devices
         let activeCount = devices.filter(\.isActive).count
         if activeCount > 0 {
