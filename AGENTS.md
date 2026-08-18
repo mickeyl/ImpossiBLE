@@ -106,7 +106,7 @@ On a provider-connection drop the simulator-side shim closes open L2CAP channels
 
 ## Known Follow-ups
 
-- **Socket-ownership guard.** Nothing stops a second copy of the mock app (or, later, the Simsalabim suite app) from `unlink`+`bind`ing `/tmp/impossible.sock` and stealing it from a running instance. Before binding, probe the existing socket with `connect()`; refuse to start the provider when a live listener answers, and only unlink a stale socket file. Planned as part of the shared SimBridgeKit extraction (see `../PLAN-SIMSALABIM.md`).
+- **Socket-ownership guard.** Nothing stops a second copy of the mock app (or, later, the Simsalabim suite app) from `unlink`+`bind`ing `/tmp/impossible.sock` and stealing it from a running instance. Before binding, probe the existing socket with `connect()`; refuse to start the provider when a live listener answers, and only unlink a stale socket file. Planned as part of the shared SimBridgeKit extraction (see `../Simsalabim/PLAN.md`).
 
 ## Release Checklist
 
