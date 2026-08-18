@@ -6,13 +6,13 @@ NOTARY_PROFILE ?=
 MOCK_CODESIGN_MATCH ?= Developer ID Application
 MOCK_SIGN_IDENTITY := $(shell security find-identity -v -p codesigning | awk -F'"' '/$(MOCK_CODESIGN_MATCH)/ {print $$2; exit}')
 MOCK_CODESIGN_FLAGS ?= --options runtime --timestamp
-MOCK_SRCS = $(shell find Sources/MockApp \( -name '*.swift' -o -name '*.m' -o -name '*.h' \) -not -path '*/.build/*' 2>/dev/null)
-MOCK_PLIST = Sources/MockApp/Resources/Info.plist
-MOCK_ENTITLEMENTS = Sources/MockApp/Resources/entitlements.plist
+MOCK_SRCS = $(shell find Sources/ImpossiBLE-Mock \( -name '*.swift' -o -name '*.m' -o -name '*.h' \) -not -path '*/.build/*' 2>/dev/null)
+MOCK_PLIST = Sources/ImpossiBLE-Mock/Resources/Info.plist
+MOCK_ENTITLEMENTS = Sources/ImpossiBLE-Mock/Resources/entitlements.plist
 MOCK_BUNDLE = ImpossiBLE-Mock.app
 MOCK_BIN = $(MOCK_BUNDLE)/Contents/MacOS/ImpossiBLE-Mock
 MOCK_BIN_NAME = ImpossiBLE-Mock
-MOCK_FONT_RESOURCE = Sources/MockApp/ProviderKit/Resources/fa-brands-400.ttf
+MOCK_FONT_RESOURCE = Sources/ImpossiBLE-Mock/ProviderKit/Resources/fa-brands-400.ttf
 INSTALLED_MOCK_APP = $(INSTALL_DIR)/$(MOCK_BUNDLE)
 MOCK_DIST_ZIP = ImpossiBLE-Mock.zip
 
@@ -94,8 +94,8 @@ mock-relaunch:
 	@mkdir -p $(MOCK_BUNDLE)/Contents/Resources
 	@cp $(MOCK_PLIST) $(MOCK_BUNDLE)/Contents/Info.plist
 	@if [ -n "$(BUILD_NUMBER)" ]; then /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(BUILD_NUMBER)" $(MOCK_BUNDLE)/Contents/Info.plist; fi
-	@cd Sources/MockApp && swift build $(SWIFTPM_FLAGS) 2>&1 | tail -3
-	@cp Sources/MockApp/.build/debug/$(MOCK_BIN_NAME) $(MOCK_BIN)
+	@cd Sources/ImpossiBLE-Mock && swift build $(SWIFTPM_FLAGS) 2>&1 | tail -3
+	@cp Sources/ImpossiBLE-Mock/.build/debug/$(MOCK_BIN_NAME) $(MOCK_BIN)
 	@cp $(MOCK_FONT_RESOURCE) $(MOCK_BUNDLE)/Contents/Resources/
 	@codesign --force --sign - --entitlements $(MOCK_ENTITLEMENTS) $(MOCK_BUNDLE) >/dev/null
 	@xattr -cr $(MOCK_BUNDLE) 2>/dev/null || true
@@ -108,8 +108,8 @@ $(MOCK_BIN): $(MOCK_SRCS) $(MOCK_PLIST) $(MOCK_ENTITLEMENTS) $(MOCK_FONT_RESOURC
 	mkdir -p $(MOCK_BUNDLE)/Contents/Resources
 	cp $(MOCK_PLIST) $(MOCK_BUNDLE)/Contents/Info.plist
 	@if [ -n "$(BUILD_NUMBER)" ]; then /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(BUILD_NUMBER)" $(MOCK_BUNDLE)/Contents/Info.plist; fi
-	cd Sources/MockApp && swift build $(SWIFTPM_FLAGS) -c release
-	cp Sources/MockApp/.build/release/ImpossiBLE-Mock $(MOCK_BIN)
+	cd Sources/ImpossiBLE-Mock && swift build $(SWIFTPM_FLAGS) -c release
+	cp Sources/ImpossiBLE-Mock/.build/release/ImpossiBLE-Mock $(MOCK_BIN)
 	cp $(MOCK_FONT_RESOURCE) $(MOCK_BUNDLE)/Contents/Resources/
 	@if [ -z "$(MOCK_SIGN_IDENTITY)" ]; then \
 		echo "WARNING: No codesigning identity matching '$(MOCK_CODESIGN_MATCH)' found in your keychain."; \

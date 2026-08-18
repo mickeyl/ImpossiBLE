@@ -3,7 +3,7 @@
 ## Project Shape
 
 - `Sources/ImpossiBLE` is the simulator-side Swift package library. It swizzles CoreBluetooth APIs at `+load` time and sends newline-delimited JSON to `/tmp/impossible.sock`. The socket is opened lazily on the first `CBCentralManager` instantiation (via a `dispatch_once` in `cbs_post_init`), so linking ImpossiBLE without using CoreBluetooth does not contact the provider. The connection layer (`CBSConnection`) auto-reconnects, sends a `hello {clientVersion, bundleId, pid}` handshake on connect (`kCBSLibraryVersion` — bump on release), and drives `CBManagerState` transitions (`poweredOn`/`poweredOff`) based on socket connectivity.
-- `Sources/MockApp` builds `ImpossiBLE-Mock.app`, the host-side menu bar provider and **single owner of the socket in both modes**. It has its own `Package.swift` with three targets: **`ImpossiBLEProviderKit`** (library product `ProviderKit/` — server, models, panel/editor views, the FontAwesome resource; this is what the Simsalabim suite app will embed), the thin **`ImpossiBLE-Mock`** executable (`App/` — app lifecycle plus the shell wiring in `StatusBarController`), and `ImpossiBLEPassthroughCore`, an ObjC library target containing `CBSPassthroughBridge` — the former `impossible-helper` daemon minus its socket server. The ProviderKit's public surface is deliberately small: `MockServer` (facade with `transport` and `passthroughActivity`), `MockStore`, the panel and editor entry views, and `FontAwesome`; everything else is internal. The transport (socket lifecycle, NDJSON framing, hello handshake, last-connection-wins takeover, client-socket hardening, socket-ownership guard) is SimBridgeKit's `ProtocolServer` (`MockServer.transport`, URL dependency on github.com/mickeyl/SimBridgeKit); `MockServer` is the domain layer on top and routes by `serveMode`: Mock answers from `MockStore`/client fixtures, Passthrough forwards every message to the bridge, which translates to real CoreBluetooth calls and emits replies through its `messageHandler`. All `MockServer` handlers run on the transport's I/O queue, which also guards its mutable state. There is no separate helper process anymore (removed in 3.0.0). Font resources (FontAwesome Brands) are bundled via SPM resource rules. The status item is implemented with AppKit (`StatusBarController`) rather than SwiftUI `MenuBarExtra` so the control panel can remain open while other apps are active.
+- `Sources/ImpossiBLE-Mock` builds `ImpossiBLE-Mock.app`, the host-side menu bar provider and **single owner of the socket in both modes**. It has its own `Package.swift` with three targets: **`ImpossiBLEProviderKit`** (library product `ProviderKit/` — server, models, panel/editor views, the FontAwesome resource; this is what the Simsalabim suite app will embed), the thin **`ImpossiBLE-Mock`** executable (`App/` — app lifecycle plus the shell wiring in `StatusBarController`), and `ImpossiBLEPassthroughCore`, an ObjC library target containing `CBSPassthroughBridge` — the former `impossible-helper` daemon minus its socket server. The ProviderKit's public surface is deliberately small: `MockServer` (facade with `transport` and `passthroughActivity`), `MockStore`, the panel and editor entry views, and `FontAwesome`; everything else is internal. The transport (socket lifecycle, NDJSON framing, hello handshake, last-connection-wins takeover, client-socket hardening, socket-ownership guard) is SimBridgeKit's `ProtocolServer` (`MockServer.transport`, URL dependency on github.com/mickeyl/SimBridgeKit); `MockServer` is the domain layer on top and routes by `serveMode`: Mock answers from `MockStore`/client fixtures, Passthrough forwards every message to the bridge, which translates to real CoreBluetooth calls and emits replies through its `messageHandler`. All `MockServer` handlers run on the transport's I/O queue, which also guards its mutable state. There is no separate helper process anymore (removed in 3.0.0). Font resources (FontAwesome Brands) are bundled via SPM resource rules. The status item is implemented with AppKit (`StatusBarController`) rather than SwiftUI `MenuBarExtra` so the control panel can remain open while other apps are active.
 - Passthrough needs `NSBluetoothAlwaysUsageDescription` (in `Resources/Info.plist`) and — under the Hardened Runtime of release builds — `com.apple.security.device.bluetooth` in `Resources/entitlements.plist`. Missing entitlement is the classic "works in debug (ad-hoc, Hardened Runtime not enforced), denied in release" trap. Ad-hoc dev builds get a fresh identity each rebuild, so macOS re-prompts for Bluetooth consent.
 - `SampleApp` is an iOS sample Xcode project that imports the local package and uses normal CoreBluetooth APIs.
 - `Sources/ImpossiBLE/CBSMockConfiguration.m` is the only client-side file with a public API. Everything else activates itself; these three functions exist so a test can supply its own virtual peripherals.
@@ -84,9 +84,9 @@ Use these checks before preparing changes for commit:
 
 ```bash
 make mock-clean mock
-cd Sources/MockApp && swift build   # standalone SPM check
+cd Sources/ImpossiBLE-Mock && swift build   # standalone SPM check
 xcodebuild -project SampleApp/SampleApp.xcodeproj -scheme SampleApp -sdk iphonesimulator -configuration Debug -destination 'generic/platform=iOS Simulator' build
-plutil -lint Sources/MockApp/Resources/Info.plist Sources/MockApp/Resources/entitlements.plist
+plutil -lint Sources/ImpossiBLE-Mock/Resources/Info.plist Sources/ImpossiBLE-Mock/Resources/entitlements.plist
 ```
 
 For Gatekeeper-related work:
@@ -114,8 +114,8 @@ When cutting a new ImpossiBLE release:
 
 - Bump the version in **three** places and keep them identical:
   `kCBSLibraryVersion` in `Sources/ImpossiBLE/CBSConnection.m`,
-  `AppVersion.current` in `Sources/MockApp/Models/AppVersion.swift`, and
-  `CFBundleShortVersionString` in `Sources/MockApp/Resources/Info.plist`.
+  `AppVersion.current` in `Sources/ImpossiBLE-Mock/Models/AppVersion.swift`, and
+  `CFBundleShortVersionString` in `Sources/ImpossiBLE-Mock/Resources/Info.plist`.
 - Update the Homebrew formula in `mickeyl/homebrew-formulae`. Bump
   `Formula/impossible.rb` to the new tag, update the tarball SHA256, run
   `brew audit --strict --online impossible` and `brew style
