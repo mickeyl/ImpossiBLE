@@ -173,10 +173,22 @@ public struct ImpossiBLESection: View {
         .frame(maxHeight: .infinity)
     }
 
+    /// The product's own icon, once the bundle carries an ImpossiBLE.icns;
+    /// until then the FontAwesome glyph stands in.
+    private static let brandIcon = NSImage(named: "ImpossiBLE")
+
     private var offBody: some View {
         bodyPlaceholder(message: "Select Mock or Passthrough to start a provider") {
-            Image(nsImage: FontAwesome.brandImage(FontAwesome.bluetoothB, size: Self.bodyPlaceholderGlyphSize))
-                .foregroundStyle(.secondary.opacity(0.35))
+            if let icon = Self.brandIcon {
+                Image(nsImage: icon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 96, height: 96)
+                    .shadow(color: .black.opacity(0.25), radius: 6, y: 3)
+            } else {
+                Image(nsImage: FontAwesome.brandImage(FontAwesome.bluetoothB, size: Self.bodyPlaceholderGlyphSize))
+                    .foregroundStyle(.secondary.opacity(0.35))
+            }
         }
     }
 
