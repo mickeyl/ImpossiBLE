@@ -61,7 +61,11 @@ public struct ImpossiBLESection: View {
                 .labelsHidden()
                 .disabled(controller.isSwitching)
 
-                modeStatusDetail
+                // Redundant while off: the body's "ImpossiBLE is off" headline
+                // carries the state, matching CAMouflage's layout.
+                if currentMode != .off {
+                    modeStatusDetail
+                }
             }
             .padding(12)
             Divider()
@@ -188,8 +192,8 @@ public struct ImpossiBLESection: View {
                 Image(nsImage: icon)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .frame(width: 96, height: 96)
-                    .shadow(color: .black.opacity(0.25), radius: 6, y: 3)
+                    .frame(width: 148, height: 148)
+                    .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
             } else {
                 Image(nsImage: FontAwesome.brandImage(FontAwesome.bluetoothB, size: Self.bodyPlaceholderGlyphSize))
                     .foregroundStyle(.secondary.opacity(0.35))
