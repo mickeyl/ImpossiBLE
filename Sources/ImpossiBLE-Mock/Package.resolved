@@ -5,8 +5,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/mickeyl/SimBridgeKit.git",
       "state" : {
-        "revision" : "0ea2aad0896af2d5892ee71cfb07ec933d2d9ba0",
-        "version" : "0.1.1"
+        "revision" : "62150325af315ef2b4297497b2a52d55ac4f7541",
+        "version" : "0.1.2"
       }
     }
   ],

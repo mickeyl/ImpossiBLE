@@ -182,9 +182,10 @@ public struct ImpossiBLESection: View {
         .frame(maxHeight: .infinity)
     }
 
-    /// The product's own icon from the app bundle. The FontAwesome glyph keeps
-    /// the embeddable ProviderKit usable in hosts that do not ship the asset.
-    private static let brandIcon = NSImage(named: "ImpossiBLE")
+    /// The product's own icon from the app bundle, pre-scaled so redraws never
+    /// pay for downsampling the icns. The FontAwesome glyph keeps the
+    /// embeddable ProviderKit usable in hosts that do not ship the asset.
+    private static let brandIcon = NSImage(named: "ImpossiBLE")?.sbkScaled(toPointSize: 148)
 
     private var offBody: some View {
         bodyPlaceholder(title: "ImpossiBLE is off", message: "Simulator apps see Bluetooth powered off.") {
@@ -194,6 +195,10 @@ public struct ImpossiBLESection: View {
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 148, height: 148)
                     .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
+                    // Rasterize icon + shadow once: a bare .shadow forces an
+                    // offscreen blur pass on every recomposite, which is visible
+                    // as stutter while the suite's pane splitter resizes this pane.
+                    .drawingGroup()
             } else {
                 Image(nsImage: FontAwesome.brandImage(FontAwesome.bluetoothB, size: Self.bodyPlaceholderGlyphSize))
                     .foregroundStyle(.secondary.opacity(0.35))
