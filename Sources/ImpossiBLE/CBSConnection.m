@@ -9,7 +9,7 @@ static const char *kCBSSocketPath = "/tmp/impossible.sock";
 // Reported to the provider in the hello handshake so version skew between the
 // linked library and the installed provider is diagnosable instead of silent.
 // Keep in sync with the release version (see the release checklist in AGENTS.md).
-static NSString *const kCBSLibraryVersion = @"3.0.0";
+static NSString *const kCBSLibraryVersion = @"3.1.0";
 static int gSockFd = -1;
 static dispatch_queue_t gReadQueue;
 static dispatch_queue_t gWriteQueue;
