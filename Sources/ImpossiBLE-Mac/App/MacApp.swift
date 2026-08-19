@@ -4,7 +4,7 @@ import AppKit
 import SimBridgeShell
 
 @MainActor
-private final class MockAppRuntime {
+private final class MacAppRuntime {
     let store: MockStore
     let server: MockServer
     let modeController: ModeTransitionController<ProviderMode>
@@ -42,10 +42,10 @@ private final class MockAppRuntime {
 
 /// Shuts the socket server down before the process exits so the socket file is
 /// unlinked cleanly. Handles every quit path (footer button and ⌘Q).
-final class MockAppDelegate: NSObject, NSApplicationDelegate {
+final class MacAppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let server = MockApp.retainedRuntime?.server else {
+        guard let server = MacApp.retainedRuntime?.server else {
             return .terminateNow
         }
 
@@ -57,10 +57,10 @@ final class MockAppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct MockApp: App {
-    fileprivate static var retainedRuntime: MockAppRuntime?
+struct MacApp: App {
+    fileprivate static var retainedRuntime: MacAppRuntime?
 
-    @NSApplicationDelegateAdaptor(MockAppDelegate.self) private var appDelegate
+    @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
 
     @StateObject private var store: MockStore
     @StateObject private var server: MockServer
@@ -68,7 +68,7 @@ struct MockApp: App {
     @StateObject private var statusBar: StatusBarController
 
     init() {
-        let runtime = Self.retainedRuntime ?? MockAppRuntime()
+        let runtime = Self.retainedRuntime ?? MacAppRuntime()
         Self.retainedRuntime = runtime
 
         _store = StateObject(wrappedValue: runtime.store)

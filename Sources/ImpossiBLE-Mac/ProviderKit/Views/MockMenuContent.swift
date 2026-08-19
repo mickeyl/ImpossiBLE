@@ -21,7 +21,7 @@ public struct MockMenuContent: View {
     @State private var launchAtLogin = MockMenuContent.launchAgent.isEnabled
     @State private var settingsAck = ""
     @State private var ackClear: DispatchWorkItem?
-    private static let launchAgent = LaunchAtLogin(label: "com.impossible.ble-mock")
+    private static let launchAgent = LaunchAtLogin(label: "com.impossible.ble-mac")
 
     public init(
         store: MockStore,

@@ -3,15 +3,15 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>ImpossiBLE Mock</string>
+	<string>ImpossiBLE Mac</string>
 	<key>CFBundleExecutable</key>
-	<string>ImpossiBLE-Mock</string>
-	<key>CFBundleIdentifier</key>
-	<string>com.impossible.ble-mock</string>
+	<string>ImpossiBLE-Mac</string>
 	<key>CFBundleIconFile</key>
 	<string>ImpossiBLE.icns</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.impossible.ble-mac</string>
 	<key>CFBundleName</key>
-	<string>ImpossiBLE Mock</string>
+	<string>ImpossiBLE Mac</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

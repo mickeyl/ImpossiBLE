@@ -20,7 +20,7 @@ ImpossiBLE is a two-process architecture:
 
 2. **Mock menu bar app** (runs natively on macOS) — The single provider owning `/tmp/impossible.sock`. In **Mock** mode it serves configurable virtual BLE peripherals; in **Passthrough** mode it translates the same messages into real `CoreBluetooth` API calls against the Mac's Bluetooth hardware — both in one process, switched by a segmented **Off / Mock / Passthrough** control.
 
-The custom menu bar window stays open while you switch apps, or can be set to dismiss on app switch from the footer. The menu bar icon reflects the active mode (strikethrough when off, plain when forwarding, dot-badged when mocking) and flashes on mock or Passthrough traffic so you can see activity at a glance. In Passthrough mode, the app lists only devices your simulator app actually communicates with through GATT or L2CAP operations, not devices that were merely discovered while scanning. The mock app ships with several stock configurations — from a single heart rate monitor to a dense 12-device sensor environment — and lets you save/load your own. It can also capture nearby BLE advertisements into a new mock configuration; the factory icon in capture results means that advertisement includes manufacturer-specific data. A "Launch at Startup" option in the footer installs a LaunchAgent for automatic login startup. Server state is persisted and auto-restored on launch.
+The custom menu bar window stays open while you switch apps, or can be set to dismiss on app switch from the footer. The menu bar icon reflects the active mode (strikethrough when off, plain when forwarding, dot-badged when mocking) and flashes on mock or Passthrough traffic so you can see activity at a glance. In Passthrough mode, the app lists only devices your simulator app actually communicates with through GATT or L2CAP operations, not devices that were merely discovered while scanning. The Mac app ships with several stock configurations — from a single heart rate monitor to a dense 12-device sensor environment — and lets you save/load your own. It can also capture nearby BLE advertisements into a new mock configuration; the factory icon in capture results means that advertisement includes manufacturer-specific data. A "Launch at Startup" option in the footer installs a LaunchAgent for automatic login startup. Server state is persisted and auto-restored on launch.
 
 Your app code remains unchanged — `CBCentralManager`, `CBPeripheral`, delegate callbacks, and all other CoreBluetooth types work as expected.
 
@@ -63,14 +63,14 @@ An app can also **bring its own mock configuration** instead of relying on the m
 
 - macOS with Bluetooth hardware
 - Xcode 15+ (Swift Package Manager)
-- Codesigning certificate recommended (optional). If none matches `MOCK_CODESIGN_MATCH`, the mock app is signed ad hoc with a warning. Note that Passthrough mode needs the Bluetooth entitlement under the Hardened Runtime, so a properly signed build is required for distributed copies.
+- Codesigning certificate recommended (optional). If none matches `MAC_CODESIGN_MATCH`, the Mac app is signed ad hoc with a warning. Note that Passthrough mode needs the Bluetooth entitlement under the Hardened Runtime, so a properly signed build is required for distributed copies.
 
 ## Quick Start
 
 ```bash
-# Clone, build, and start the mock menu bar app
+# Clone, build, and start the Mac menu bar app
 cd ImpossiBLE
-make mock-run
+make mac-run
 
 # Select "Mock" or "Passthrough" in its panel.
 
@@ -133,15 +133,15 @@ Pin the provider alongside the library: a client built against 2.4.0 talking to 
 
 ## Forwarding vs Mocking
 
-The iOS app always uses the same ImpossiBLE integration and connects to `/tmp/impossible.sock`. The mock menu bar app is the single provider owning that socket; the segmented **Off / Mock / Passthrough** picker selects what it serves. In Passthrough mode it also shows the real BLE devices that have seen actual read/write/subscribe/L2CAP traffic, with a short active indicator for current communication.
+The iOS app always uses the same ImpossiBLE integration and connects to `/tmp/impossible.sock`. The Mac menu bar app is the single provider owning that socket; the segmented **Off / Mock / Passthrough** picker selects what it serves. In Passthrough mode it also shows the real BLE devices that have seen actual read/write/subscribe/L2CAP traffic, with a short active indicator for current communication.
 
-Passthrough uses macOS Bluetooth directly from the mock app, so the first activation prompts for Bluetooth permission. Ad-hoc signed development builds get a fresh signing identity on each rebuild, which makes macOS re-prompt.
+Passthrough uses macOS Bluetooth directly from the Mac app, so the first activation prompts for Bluetooth permission. Ad-hoc signed development builds get a fresh signing identity on each rebuild, which makes macOS re-prompt.
 
 For headless setups, the app's state can be seeded before launch instead of clicking the panel:
 
 ```bash
-defaults write com.impossible.ble-mock SelectedProviderMode passthrough   # or: mock / off
-make mock-run
+defaults write com.impossible.ble-mac SelectedProviderMode passthrough   # or: mock / off
+make mac-run
 ```
 
 ### Capturing Mock Configurations
@@ -150,7 +150,7 @@ make mock-run
   <img src="screenshot-capture.png" alt="Capture mode" width="300">
 </p>
 
-The mock menu bar app can capture nearby BLE devices into a new editable configuration. Click **Capture**, start scanning, choose the devices to include, then save the configuration.
+The Mac menu bar app can capture nearby BLE devices into a new editable configuration. Click **Capture**, start scanning, choose the devices to include, then save the configuration.
 
 Capture results hide unnamed devices by default and sort likely useful devices first: advertisements with more service UUIDs, named devices, connectable devices, manufacturer-specific data, then stronger RSSI. Enable **Show Unnamed** when you need to inspect the full noisy environment. The factory icon means the advertisement includes manufacturer-specific data.
 
@@ -160,22 +160,22 @@ When you save a capture, ImpossiBLE performs a deeper inspection for selected co
 
 | Target    | Description                                        |
 |-----------|----------------------------------------------------|
-| `mock`    | Build the mock menu bar `.app` bundle              |
+| `mac`    | Build the Mac menu bar `.app` bundle              |
 | `install` | Build and copy to `~/.local/bin/`                  |
-| `mock-relaunch` | Rebuild a debug mock app bundle and relaunch from the repo |
-| `mock-run`| Install and start the mock menu bar app            |
-| `mock-stop` | Stop the running mock menu bar app               |
-| `mock-status` | Show whether the mock app is running           |
-| `mock-log` | Tail system log output from the mock app          |
-| `mock-assess` | Verify signing and Gatekeeper assessment       |
-| `mock-notarize` | Notarize and staple the mock menu bar app    |
+| `mac-relaunch` | Rebuild a debug Mac app bundle and relaunch from the repo |
+| `mac-run`| Install and start the Mac menu bar app            |
+| `mac-stop` | Stop the running Mac menu bar app               |
+| `mac-status` | Show whether the Mac app is running           |
+| `mac-log` | Tail system log output from the Mac app          |
+| `mac-assess` | Verify signing and Gatekeeper assessment       |
+| `mac-notarize` | Notarize and staple the Mac menu bar app    |
 | `clean`   | Remove local build artifacts                       |
 
-For local development, the mock app falls back to ad-hoc signing if no identity matches `MOCK_CODESIGN_MATCH`. Gatekeeper will reject ad-hoc signed copies that are quarantined or distributed. For a distributable mock app, build with a Developer ID Application certificate, for example:
+For local development, the Mac app falls back to ad-hoc signing if no identity matches `MAC_CODESIGN_MATCH`. Gatekeeper will reject ad-hoc signed copies that are quarantined or distributed. For a distributable Mac app, build with a Developer ID Application certificate, for example:
 
 ```bash
-make mock MOCK_CODESIGN_MATCH="Developer ID Application"
-make mock-notarize NOTARY_PROFILE="impossible-notary"
+make mac MAC_CODESIGN_MATCH="Developer ID Application"
+make mac-notarize NOTARY_PROFILE="impossible-notary"
 ```
 
 ## Integration
@@ -192,7 +192,7 @@ That is all. On simulator builds the library installs its CoreBluetooth swizzles
 
 - **Central role only** — peripheral/broadcaster mode is not supported.
 - **Single simulator app, last connection wins** — the provider serves one simulator app at a time, and a new connection *takes over*: the previous client is disconnected (its library stops auto-reconnecting, its scans, connections, and L2CAP channels are torn down) and the freshly launched app is served. This is what makes relaunching the app, or switching between simulators, "just work" — to use an older simulator again, relaunch its app. Multiple `CBCentralManager` instances within a single app are fully supported.
-- **Provider must be running** — the library auto-reconnects every 2 seconds, so you can start the mock app before or after your simulator app. Until connected, `CBCentralManager.state` reports `poweredOff`.
+- **Provider must be running** — the library auto-reconnects every 2 seconds, so you can start the Mac app before or after your simulator app. Until connected, `CBCentralManager.state` reports `poweredOff`.
 
 ## Roadmap Beyond 2.0
 
@@ -205,7 +205,7 @@ The goal remains full CoreBluetooth API coverage in the simulator. Real-device t
 - [ ] **State restoration parity** (`CBCentralManager` restoration flows).
 - [x] **Pairing / security flows** (bonding, encryption-required characteristics, and relevant errors) in mock mode. Remaining work: passthrough parity for every macOS pairing edge case.
 - [ ] **Performance + robustness** (larger payloads, stress testing). Auto-reconnect and Passthrough activity visibility are now implemented.
-- [x] **Configurable mocking schemes** — the mock menu bar app provides stock and user-defined device configurations with full control over services, characteristics, descriptors, and server availability. Remaining work: scripted fault injection and programmatic test automation.
+- [x] **Configurable mocking schemes** — the Mac menu bar app provides stock and user-defined device configurations with full control over services, characteristics, descriptors, and server availability. Remaining work: scripted fault injection and programmatic test automation.
 
 ## License
 

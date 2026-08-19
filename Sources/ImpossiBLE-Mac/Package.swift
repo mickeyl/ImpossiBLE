@@ -2,14 +2,14 @@
 import PackageDescription
 
 let package = Package(
-    name: "ImpossiBLE-Mock",
+    name: "ImpossiBLE-Mac",
     platforms: [.macOS("15.0")],
     products: [
         // The host-side provider as a library, so the Simsalabim suite app can
         // embed it alongside other providers. The standalone menu bar app is a
         // thin wrapper around the same target.
         .library(name: "ImpossiBLEProviderKit", targets: ["ImpossiBLEProviderKit"]),
-        .executable(name: "ImpossiBLE-Mock", targets: ["ImpossiBLE-Mock"]),
+        .executable(name: "ImpossiBLE-Mac", targets: ["ImpossiBLE-Mac"]),
     ],
     dependencies: [
         .package(url: "https://github.com/mickeyl/SimBridgeKit.git", from: "0.1.1"),
@@ -36,7 +36,7 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "ImpossiBLE-Mock",
+            name: "ImpossiBLE-Mac",
             dependencies: [
                 "ImpossiBLEProviderKit",
                 .product(name: "SimBridgeServer", package: "SimBridgeKit"),
