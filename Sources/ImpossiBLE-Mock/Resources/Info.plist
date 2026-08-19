@@ -8,6 +8,8 @@
 	<string>ImpossiBLE-Mock</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.impossible.ble-mock</string>
+	<key>CFBundleIconFile</key>
+	<string>ImpossiBLE.icns</string>
 	<key>CFBundleName</key>
 	<string>ImpossiBLE Mock</string>
 	<key>CFBundlePackageType</key>

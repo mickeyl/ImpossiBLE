@@ -173,8 +173,8 @@ public struct ImpossiBLESection: View {
         .frame(maxHeight: .infinity)
     }
 
-    /// The product's own icon, once the bundle carries an ImpossiBLE.icns;
-    /// until then the FontAwesome glyph stands in.
+    /// The product's own icon from the app bundle. The FontAwesome glyph keeps
+    /// the embeddable ProviderKit usable in hosts that do not ship the asset.
     private static let brandIcon = NSImage(named: "ImpossiBLE")
 
     private var offBody: some View {

@@ -9,6 +9,7 @@ MOCK_CODESIGN_FLAGS ?= --options runtime --timestamp
 MOCK_SRCS = $(shell find Sources/ImpossiBLE-Mock \( -name '*.swift' -o -name '*.m' -o -name '*.h' \) -not -path '*/.build/*' 2>/dev/null)
 MOCK_PLIST = Sources/ImpossiBLE-Mock/Resources/Info.plist
 MOCK_ENTITLEMENTS = Sources/ImpossiBLE-Mock/Resources/entitlements.plist
+MOCK_ICON = Sources/ImpossiBLE-Mock/Resources/ImpossiBLE.icns
 MOCK_BUNDLE = ImpossiBLE-Mock.app
 MOCK_BIN = $(MOCK_BUNDLE)/Contents/MacOS/ImpossiBLE-Mock
 MOCK_BIN_NAME = ImpossiBLE-Mock
@@ -96,6 +97,7 @@ mock-relaunch:
 	@if [ -n "$(BUILD_NUMBER)" ]; then /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(BUILD_NUMBER)" $(MOCK_BUNDLE)/Contents/Info.plist; fi
 	@cd Sources/ImpossiBLE-Mock && swift build $(SWIFTPM_FLAGS) 2>&1 | tail -3
 	@cp Sources/ImpossiBLE-Mock/.build/debug/$(MOCK_BIN_NAME) $(MOCK_BIN)
+	@cp $(MOCK_ICON) $(MOCK_BUNDLE)/Contents/Resources/ImpossiBLE.icns
 	@cp $(MOCK_FONT_RESOURCE) $(MOCK_BUNDLE)/Contents/Resources/
 	@codesign --force --sign - --entitlements $(MOCK_ENTITLEMENTS) $(MOCK_BUNDLE) >/dev/null
 	@xattr -cr $(MOCK_BUNDLE) 2>/dev/null || true
@@ -103,13 +105,14 @@ mock-relaunch:
 	@open "$(MOCK_BUNDLE)"
 	@echo "Mock app relaunched (debug build)"
 
-$(MOCK_BIN): $(MOCK_SRCS) $(MOCK_PLIST) $(MOCK_ENTITLEMENTS) $(MOCK_FONT_RESOURCE)
+$(MOCK_BIN): $(MOCK_SRCS) $(MOCK_PLIST) $(MOCK_ENTITLEMENTS) $(MOCK_ICON) $(MOCK_FONT_RESOURCE)
 	mkdir -p $(MOCK_BUNDLE)/Contents/MacOS
 	mkdir -p $(MOCK_BUNDLE)/Contents/Resources
 	cp $(MOCK_PLIST) $(MOCK_BUNDLE)/Contents/Info.plist
 	@if [ -n "$(BUILD_NUMBER)" ]; then /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(BUILD_NUMBER)" $(MOCK_BUNDLE)/Contents/Info.plist; fi
 	cd Sources/ImpossiBLE-Mock && swift build $(SWIFTPM_FLAGS) -c release
 	cp Sources/ImpossiBLE-Mock/.build/release/ImpossiBLE-Mock $(MOCK_BIN)
+	cp $(MOCK_ICON) $(MOCK_BUNDLE)/Contents/Resources/ImpossiBLE.icns
 	cp $(MOCK_FONT_RESOURCE) $(MOCK_BUNDLE)/Contents/Resources/
 	@if [ -z "$(MOCK_SIGN_IDENTITY)" ]; then \
 		echo "WARNING: No codesigning identity matching '$(MOCK_CODESIGN_MATCH)' found in your keychain."; \
