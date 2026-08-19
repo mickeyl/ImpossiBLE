@@ -15,6 +15,9 @@ public struct ImpossiBLESection: View {
     @ObservedObject var controller: ModeTransitionController<ProviderMode>
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
+    /// A host that surfaces the connected client on its own level (the suite
+    /// does) passes false; the section then omits its client display.
+    var showsClient: Bool
     var onDismiss: (() -> Void)?
     var onOpenCapture: (() -> Void)?
     var onOpenDevice: ((UUID) -> Void)?
@@ -30,6 +33,7 @@ public struct ImpossiBLESection: View {
         transport: ProtocolServer,
         activity: PassthroughActivityMonitor,
         controller: ModeTransitionController<ProviderMode>,
+        showsClient: Bool = true,
         onDismiss: (() -> Void)? = nil,
         onOpenCapture: (() -> Void)? = nil,
         onOpenDevice: ((UUID) -> Void)? = nil
@@ -39,6 +43,7 @@ public struct ImpossiBLESection: View {
         self.transport = transport
         self.activity = activity
         self.controller = controller
+        self.showsClient = showsClient
         self.onDismiss = onDismiss
         self.onOpenCapture = onOpenCapture
         self.onOpenDevice = onOpenDevice
@@ -178,7 +183,7 @@ public struct ImpossiBLESection: View {
     private static let brandIcon = NSImage(named: "ImpossiBLE")
 
     private var offBody: some View {
-        bodyPlaceholder(message: "Select Mock or Passthrough to start a provider") {
+        bodyPlaceholder(title: "ImpossiBLE is off", message: "Simulator apps see Bluetooth powered off.") {
             if let icon = Self.brandIcon {
                 Image(nsImage: icon)
                     .resizable()
@@ -193,14 +198,20 @@ public struct ImpossiBLESection: View {
     }
 
     @ViewBuilder
-    private func bodyPlaceholder<Icon: View>(message: String, @ViewBuilder icon: () -> Icon) -> some View {
-        VStack(spacing: 10) {
+    private func bodyPlaceholder<Icon: View>(title: String? = nil, message: String, @ViewBuilder icon: () -> Icon) -> some View {
+        VStack(spacing: 14) {
             icon()
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
+            VStack(spacing: 4) {
+                if let title {
+                    Text(title)
+                        .font(.headline)
+                }
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -227,8 +238,9 @@ public struct ImpossiBLESection: View {
             statusColor: Self.statusColor(mode: currentMode, status: transport.status),
             title: providerStatusTitle,
             detail: providerStatusDetailText,
-            client: providerClient,
-            terminateClient: providerClient == nil ? nil : terminateProviderClient
+            showsClient: showsClient,
+            client: showsClient ? providerClient : nil,
+            terminateClient: (showsClient && providerClient != nil) ? terminateProviderClient : nil
         )
     }
 
@@ -618,6 +630,7 @@ private struct ProviderStatusLine: View {
     let statusColor: Color
     let title: String
     let detail: String
+    let showsClient: Bool
     let client: SocketClientInfo?
     let terminateClient: (() -> Void)?
 
@@ -641,10 +654,12 @@ private struct ProviderStatusLine: View {
                     Text(title)
                         .font(.caption.weight(.medium))
                         .lineLimit(1)
-                    Text(clientText)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    if showsClient {
+                        Text(clientText)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                     Spacer(minLength: 0)
                 }
 
