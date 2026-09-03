@@ -1,11 +1,20 @@
 #import "CBSConnection.h"
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 
 #if TARGET_OS_SIMULATOR
 
-static const char *kCBSSocketPath = "/tmp/impossible.sock";
+static NSString *const kCBSProviderSocketPathEnvironmentVariable = @"IMPOSSIBLE_SOCKET_PATH";
+static const char *const kCBSDefaultProviderSocketPath = "/tmp/impossible.sock";
+
+static const char *cbs_provider_socket_path(void) {
+    NSString *configured = NSProcessInfo.processInfo.environment[kCBSProviderSocketPathEnvironmentVariable];
+    return configured.length > 0
+               ? configured.fileSystemRepresentation
+               : kCBSDefaultProviderSocketPath;
+}
 // Reported to the provider in the hello handshake so version skew between the
 // linked library and the installed provider is diagnosable instead of silent.
 // Keep in sync with the release version (see the release checklist in AGENTS.md).
@@ -130,10 +139,18 @@ static int cbs_try_connect(void) {
     if (gSockFd >= 0) {
         return gSockFd;
     }
+
+    const char *socketPath = cbs_provider_socket_path();
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, kCBSSocketPath, sizeof(addr.sun_path) - 1);
+    size_t socketPathLength = strlen(socketPath);
+    if (socketPathLength >= sizeof(addr.sun_path)) {
+        NSLog(@"ImpossiBLE: provider socket path is too long (%zu bytes; maximum %zu)",
+              socketPathLength, sizeof(addr.sun_path) - 1);
+        return -1;
+    }
+    memcpy(addr.sun_path, socketPath, socketPathLength + 1);
 
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
@@ -166,7 +183,7 @@ static int cbs_connect(void) {
             usleep(200000);
         }
     }
-    NSLog(@"ImpossiBLE: connect(%s) failed after retries", kCBSSocketPath);
+    NSLog(@"ImpossiBLE: connect(%s) failed after retries", cbs_provider_socket_path());
     cbs_schedule_reconnect();
     return -1;
 }

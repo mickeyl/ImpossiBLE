@@ -37,7 +37,7 @@ An app can also **bring its own mock configuration** instead of relying on the m
 - **Method swizzling on the simulator**: the library swizzles `CBCentralManager` init/state/scan/connect APIs at `+load` and routes them to a local transport. The socket connection to the provider is opened lazily on the first `CBCentralManager` instantiation, so apps that link ImpossiBLE without using CoreBluetooth do not contact the provider.
 - **Multi-central multiplexing**: multiple `CBCentralManager` instances in the same app work independently, each with its own peripheral store, scan filters, and delegate callbacks — matching real CoreBluetooth behavior where peripherals and their discovered services are shared across managers.
 - **Proxy CoreBluetooth objects**: it creates shim `CBPeripheral`, `CBService`, `CBCharacteristic`, `CBDescriptor`, and `CBL2CAPChannel` objects so your app sees real types.
-- **Transport**: newline-delimited JSON over a Unix domain socket (`/tmp/impossible.sock`), with auto-reconnect.
+- **Transport**: newline-delimited JSON over a Unix domain socket (`/tmp/impossible.sock` by default), with auto-reconnect and an optional per-process provider path.
 - **Connection-aware state**: `CBCentralManager.state` reflects actual socket connectivity — `poweredOn` when connected to a provider, `poweredOff` when not. `centralManagerDidUpdateState:` fires automatically on transitions, so your app reacts to the provider starting or stopping just like it would to real Bluetooth state changes. If the provider connection drops while peripherals are connected, the library also delivers `centralManager:didDisconnectPeripheral:` for each and closes any open L2CAP channels, so your disconnect handling runs instead of leaving a stale connection.
 - **Data encoding**: characteristic values and L2CAP payloads are base64-encoded across the wire.
 - **Service filter fidelity**: Passthrough enforces `discoverServices:` filters to match iOS behavior, even though macOS CoreBluetooth returns all cached services.
@@ -77,6 +77,28 @@ make mac-run
 # In Xcode: add ImpossiBLE as a local Swift package dependency,
 # then build and run your app in the iOS Simulator.
 ```
+
+### Custom Provider Socket
+
+By default the simulator library connects to the ImpossiBLE Mac provider at
+`/tmp/impossible.sock`. Automated tests and custom or headless providers can
+select another Unix domain socket for a simulator process by setting
+`IMPOSSIBLE_SOCKET_PATH` before launching the app:
+
+```bash
+export IMPOSSIBLE_SOCKET_PATH="/tmp/my-test-run/provider.sock"
+```
+
+The configured value is resolved for every connection attempt, including
+automatic reconnects. An unset or empty value preserves the default behavior.
+The path must fit in Darwin's Unix-domain socket address; an overlong path is
+rejected and logged rather than silently truncated.
+
+This setting changes only the simulator library's destination. The standard
+ImpossiBLE Mac app continues to own `/tmp/impossible.sock`, so a custom path is
+intended for a provider that explicitly listens at that location. Giving each
+test run its own socket avoids collisions between independently managed
+providers without changing application code.
 
 ## Client-Supplied Configurations
 
