@@ -18,6 +18,7 @@ static void *kCBSIsScanningKey = &kCBSIsScanningKey;
 static void *kCBSScanServiceFilterKey = &kCBSScanServiceFilterKey;
 static void *kCBSScanWireOptionsKey = &kCBSScanWireOptionsKey;
 static void *kCBSCentralKeyKey = &kCBSCentralKeyKey;
+static void *kCBSInitialStateReportedKey = &kCBSInitialStateReportedKey;
 static CBCentralManager *cbs_owner_central_for_peripheral(NSUUID *identifier);
 static NSArray<CBSPeripheral *> *cbs_all_peripherals_for_uuid(NSUUID *uuid);
 static uint64_t gNextCentralId = 1;
@@ -41,6 +42,10 @@ static NSMutableDictionary<NSString *, NSNumber *> *gL2CAPFds;
 static void cbs_notify_all_centrals_state_changed(void) {
     NSArray *centrals = gCentrals.allObjects;
     for (CBCentralManager *central in centrals) {
+        if (!objc_getAssociatedObject(central, kCBSInitialStateReportedKey)) {
+            // Its initial report, still queued, carries the new state.
+            continue;
+        }
         id delegate = central.delegate;
         if (delegate && [delegate respondsToSelector:@selector(centralManagerDidUpdateState:)]) {
             dispatch_queue_t q = objc_getAssociatedObject(central, kCBSDelegateQueueKey);
@@ -1628,7 +1633,12 @@ static void cbs_ensure_connection_open(void) {
 }
 
 static void cbs_post_init(id obj, id delegate, dispatch_queue_t queue) {
-    cbs_ensure_connection_open();
+    // The shorter initializers call the longer one, and both are swizzled.
+    if (objc_getAssociatedObject(obj, kCBSDelegateQueueKey)) {
+        return;
+    }
+    // Record the central before the socket opens: the provider may answer
+    // hello at once, and the connection coming up notifies registered centrals.
     dispatch_queue_t q = queue ?: dispatch_get_main_queue();
     objc_setAssociatedObject(obj, kCBSDelegateQueueKey, q, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(obj, kCBSIsScanningKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1636,11 +1646,23 @@ static void cbs_post_init(id obj, id delegate, dispatch_queue_t queue) {
     objc_setAssociatedObject(obj, kCBSScanWireOptionsKey, @{}, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     gCentral = obj;
     cbs_register_central((CBCentralManager *)obj);
-    if (delegate && [delegate respondsToSelector:@selector(centralManagerDidUpdateState:)]) {
-        dispatch_async(q, ^{
-            [delegate centralManagerDidUpdateState:obj];
-        });
-    }
+    cbs_ensure_connection_open();
+
+    // Like CoreBluetooth, report the initial state once, when it is known:
+    // after the open in flight has connected or failed.
+    __weak CBCentralManager *weakCentral = obj;
+    CBSConnectionAfterPendingOpen(^{
+        CBCentralManager *central = weakCentral;
+        if (!central) {
+            return;
+        }
+        objc_setAssociatedObject(central, kCBSInitialStateReportedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (delegate && [delegate respondsToSelector:@selector(centralManagerDidUpdateState:)]) {
+            dispatch_async(q, ^{
+                [delegate centralManagerDidUpdateState:central];
+            });
+        }
+    });
 }
 
 static id (*orig_init)(id, SEL, id, dispatch_queue_t, NSDictionary *);

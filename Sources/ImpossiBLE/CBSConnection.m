@@ -252,6 +252,13 @@ void CBSConnectionOpen(void) {
     });
 }
 
+void CBSConnectionAfterPendingOpen(dispatch_block_t block) {
+    if (!gWriteQueue) {
+        gWriteQueue = dispatch_queue_create("impossible.writer", DISPATCH_QUEUE_SERIAL);
+    }
+    dispatch_async(gWriteQueue, block);
+}
+
 void CBSConnectionSend(NSDictionary *msg) {
     if (!gWriteQueue) {
         gWriteQueue = dispatch_queue_create("impossible.writer", DISPATCH_QUEUE_SERIAL);
