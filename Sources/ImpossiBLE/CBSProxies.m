@@ -37,7 +37,7 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
         _shimName = [name copy];
         _shimDelegate = nil;
         _shimState = CBPeripheralStateDisconnected;
-        _shimServices = @[];
+        _shimServices = nil;
     }
     return self;
 }
@@ -48,7 +48,7 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
 - (void)setDelegate:(id<CBPeripheralDelegate>)delegate { _shimDelegate = delegate; }
 - (CBPeripheralState)state { return _shimState; }
 - (NSArray *)services { return _shimServices; }
-- (void)setServices:(NSArray *)services { _shimServices = [services copy] ?: @[]; }
+- (void)setServices:(NSArray *)services { _shimServices = [services copy]; }
 
 - (void)cbs_updateName:(NSString *)name {
     _shimName = [name copy];
@@ -56,6 +56,22 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
 
 - (void)cbs_setState:(CBPeripheralState)state {
     _shimState = state;
+    // As in CoreBluetooth, a disconnect ends every subscription and forgets
+    // the services: services is nil until the app discovers them again on its
+    // next connection.
+    if (state == CBPeripheralStateDisconnected) {
+        for (id service in _shimServices) {
+            if (![service isKindOfClass:[CBSService class]]) {
+                continue;
+            }
+            for (id characteristic in [(CBSService *)service characteristics]) {
+                if ([characteristic isKindOfClass:[CBSCharacteristic class]]) {
+                    [(CBSCharacteristic *)characteristic cbs_setNotifying:NO];
+                }
+            }
+        }
+        _shimServices = nil;
+    }
 }
 
 - (void)readRSSI {
