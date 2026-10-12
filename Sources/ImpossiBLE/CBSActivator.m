@@ -216,6 +216,27 @@ static NSArray<CBSPeripheral *> *cbs_all_peripherals_for_uuid(NSUUID *uuid) {
     return matches;
 }
 
+// iOS remembers the peripherals it has seen across launches, and
+// retrievePeripheralsWithIdentifiers: returns them to a relaunched app.
+static NSString *const kCBSKnownPeripheralsKey = @"ImpossiBLE.knownPeripherals";
+
+static void cbs_remember_peripheral(NSUUID *uuid, NSString *name) {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSDictionary *known = [defaults dictionaryForKey:kCBSKnownPeripheralsKey] ?: @{};
+    NSString *value = name ?: @"";
+    if ([known[uuid.UUIDString] isEqual:value] || (value.length == 0 && known[uuid.UUIDString])) {
+        return;
+    }
+    NSMutableDictionary *updated = [known mutableCopy];
+    updated[uuid.UUIDString] = value;
+    [defaults setObject:updated forKey:kCBSKnownPeripheralsKey];
+}
+
+static NSString *cbs_known_peripheral_name(NSUUID *uuid) {
+    id name = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kCBSKnownPeripheralsKey][uuid.UUIDString];
+    return [name isKindOfClass:[NSString class]] ? name : nil;
+}
+
 static CBSPeripheral *cbs_any_peripheral_for_uuid(NSUUID *uuid) {
     NSArray<CBSPeripheral *> *matches = cbs_all_peripherals_for_uuid(uuid);
     return matches.count > 0 ? matches.firstObject : nil;
@@ -786,6 +807,7 @@ static void cbs_handle_message(NSDictionary *msg) {
         if (!uuid) {
             return;
         }
+        cbs_remember_peripheral(uuid, name);
         if (!gAdvertisedServices) {
             gAdvertisedServices = [NSMutableDictionary dictionary];
         }
@@ -1838,10 +1860,14 @@ static NSArray *cbs_retrieve_peripherals(id self, SEL _cmd, NSArray *identifiers
             CBSPeripheral *peripheral = store[uuid];
             if (!peripheral) {
                 CBSPeripheral *source = cbs_any_peripheral_for_uuid(uuid);
+                NSString *knownName = cbs_known_peripheral_name(uuid);
                 if (source) {
                     peripheral = [[CBSPeripheral alloc] initWithIdentifier:uuid name:source.name ?: @""];
                     [peripheral cbs_setState:source.state];
                     peripheral.services = source.services ?: @[];
+                    store[uuid] = peripheral;
+                } else if (knownName) {
+                    peripheral = [[CBSPeripheral alloc] initWithIdentifier:uuid name:knownName];
                     store[uuid] = peripheral;
                 }
             }
