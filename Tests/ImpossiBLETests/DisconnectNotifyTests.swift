@@ -19,6 +19,7 @@ final class DisconnectNotifyTests: XCTestCase {
         provider.send(["type": "didConnect", "id": id])
         XCTAssertTrue(waitUntil { peripheral.state == .connected })
 
+        XCTAssertNil(peripheral.services)
         peripheral.discoverServices(nil)
         XCTAssertNotNil(provider.next("discoverServices"))
         provider.send(["type": "didDiscoverServices", "id": id, "error": "",
@@ -44,6 +45,7 @@ final class DisconnectNotifyTests: XCTestCase {
 
         XCTAssertEqual(peripheral.state, .disconnected)
         XCTAssertFalse(characteristic.isNotifying)
+        XCTAssertNil(peripheral.services)
     }
 }
 #endif
