@@ -56,6 +56,20 @@ static NSArray<NSString *> *cbs_uuid_strings(NSArray<CBUUID *> *uuids) {
 
 - (void)cbs_setState:(CBPeripheralState)state {
     _shimState = state;
+    // As in CoreBluetooth, a disconnect ends every subscription; the app
+    // subscribes again on its next connection.
+    if (state == CBPeripheralStateDisconnected) {
+        for (id service in _shimServices) {
+            if (![service isKindOfClass:[CBSService class]]) {
+                continue;
+            }
+            for (id characteristic in [(CBSService *)service characteristics]) {
+                if ([characteristic isKindOfClass:[CBSCharacteristic class]]) {
+                    [(CBSCharacteristic *)characteristic cbs_setNotifying:NO];
+                }
+            }
+        }
+    }
 }
 
 - (void)readRSSI {
