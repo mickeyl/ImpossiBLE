@@ -435,20 +435,40 @@ static void cbs_l2cap_setup_read(NSString *chanId, int fd) {
     gL2CAPFds[chanId] = @(fd);
 }
 
+// CoreBluetooth treats a 16- or 32-bit UUID and its 128-bit form on the
+// Bluetooth base UUID as equal; comparing strings must too.
+static NSString *cbs_canonical_uuid_string(id item) {
+    CBUUID *uuid = nil;
+    if ([item isKindOfClass:[CBUUID class]]) {
+        uuid = item;
+    } else if ([item isKindOfClass:[NSString class]] && [item length] > 0) {
+        @try {
+            uuid = [CBUUID UUIDWithString:item];
+        } @catch (NSException *e) {
+            return [(NSString *)item uppercaseString];
+        }
+    }
+    NSData *data = uuid.data;
+    if (data.length == 2 || data.length == 4) {
+        const uint8_t *b = data.bytes;
+        uint32_t value = 0;
+        for (NSUInteger i = 0; i < data.length; i++) {
+            value = value << 8 | b[i];
+        }
+        return [NSString stringWithFormat:@"%08X-0000-1000-8000-00805F9B34FB", value];
+    }
+    return uuid.UUIDString.uppercaseString;
+}
+
 static NSSet<NSString *> *cbs_normalized_uuid_string_set(NSArray *uuids) {
     NSMutableSet<NSString *> *out = [NSMutableSet set];
     if (![uuids isKindOfClass:[NSArray class]]) {
         return out;
     }
     for (id item in uuids) {
-        NSString *uuidString = nil;
-        if ([item isKindOfClass:[CBUUID class]]) {
-            uuidString = ((CBUUID *)item).UUIDString;
-        } else if ([item isKindOfClass:[NSString class]]) {
-            uuidString = (NSString *)item;
-        }
+        NSString *uuidString = cbs_canonical_uuid_string(item);
         if (uuidString.length > 0) {
-            [out addObject:uuidString.uppercaseString];
+            [out addObject:uuidString];
         }
     }
     return out;
@@ -498,7 +518,7 @@ static BOOL cbs_central_should_receive_discovery(CBCentralManager *central, CBSP
     NSArray *services = peripheral.services;
     for (id service in services) {
         CBUUID *uuid = [service respondsToSelector:@selector(UUID)] ? [service UUID] : nil;
-        NSString *uuidString = [uuid.UUIDString uppercaseString];
+        NSString *uuidString = cbs_canonical_uuid_string(uuid);
         if (uuidString.length > 0 && [wanted containsObject:uuidString]) {
             return YES;
         }
@@ -602,7 +622,7 @@ static BOOL cbs_peripheral_matches_service_filter(CBSPeripheral *peripheral, NSS
     NSArray *services = [peripheral services];
     for (id service in services) {
         CBUUID *uuid = [service respondsToSelector:@selector(UUID)] ? [service UUID] : nil;
-        NSString *uuidString = [uuid.UUIDString uppercaseString];
+        NSString *uuidString = cbs_canonical_uuid_string(uuid);
         if (uuidString.length > 0 && [wantedServices containsObject:uuidString]) {
             return YES;
         }
