@@ -758,6 +758,14 @@ static NSString *CBSStreamEventName(NSStreamEvent event) {
     return [value description] ?: @"";
 }
 
+/// The error as the library rebuilds it: its description, domain and code.
+- (NSDictionary *)errorFieldsFor:(NSError *)error {
+    if (!error) {
+        return @{@"error": @""};
+    }
+    return @{@"error": error.localizedDescription ?: @"", @"errorDomain": error.domain, @"errorCode": @(error.code)};
+}
+
 - (void)sendDisconnectForPeripheral:(CBPeripheral *)peripheral
                           timestamp:(CFAbsoluteTime)timestamp
                      isReconnecting:(BOOL)isReconnecting
@@ -765,14 +773,14 @@ static NSString *CBSStreamEventName(NSStreamEvent event) {
     if (!peripheral.identifier) {
         return;
     }
-    NSString *errStr = error ? [error localizedDescription] : @"";
-    [self sendMessage:@{
+    NSMutableDictionary *msg = [@{
         @"type": @"didDisconnect",
         @"id": peripheral.identifier.UUIDString,
-        @"error": errStr,
         @"timestamp": @(timestamp),
         @"isReconnecting": @(isReconnecting)
-    }];
+    } mutableCopy];
+    [msg addEntriesFromDictionary:[self errorFieldsFor:error]];
+    [self sendMessage:msg];
 }
 
 #pragma mark - CBCentralManagerDelegate
@@ -959,8 +967,9 @@ static NSString *CBSStreamEventName(NSStreamEvent event) {
     if (!peripheral.identifier) {
         return;
     }
-    NSString *errStr = error ? [error localizedDescription] : @"";
-    [self sendMessage:@{@"type": @"didFailConnect", @"id": peripheral.identifier.UUIDString, @"error": errStr}];
+    NSMutableDictionary *msg = [@{@"type": @"didFailConnect", @"id": peripheral.identifier.UUIDString} mutableCopy];
+    [msg addEntriesFromDictionary:[self errorFieldsFor:error]];
+    [self sendMessage:msg];
 }
 
 - (void)centralManager:(CBCentralManager *)central didDisconnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error {
