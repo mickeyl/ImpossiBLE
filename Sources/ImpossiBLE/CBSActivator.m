@@ -930,7 +930,7 @@ static void cbs_handle_message(NSDictionary *msg) {
         }
         dispatch_queue_t queue = cbs_callback_queue_for_central(central);
         CBPeripheral *cbPeripheral = (CBPeripheral *)peripheral;
-        NSError *err = cbs_error_from_message(msg[@"error"]);
+        NSError *err = cbs_error_from_msg(msg);
         NSNumber *timestampNum = msg[@"timestamp"];
         NSNumber *isReconnectingNum = msg[@"isReconnecting"];
         CFAbsoluteTime timestamp = [timestampNum respondsToSelector:@selector(doubleValue)] ? timestampNum.doubleValue : CFAbsoluteTimeGetCurrent();
