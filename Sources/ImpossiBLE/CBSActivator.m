@@ -938,6 +938,9 @@ static void cbs_handle_message(NSDictionary *msg) {
         dispatch_async(queue, ^{
             if ([type isEqualToString:@"didConnect"] &&
                 [delegate respondsToSelector:@selector(centralManager:didConnectPeripheral:)]) {
+                // A cancelled connect's didDisconnect can land after this connect was issued and
+                // drop its owner, which would orphan every later event for the peripheral
+                gPeripheralOwners[uuid] = cbs_central_key(central);
                 [delegate centralManager:central didConnectPeripheral:cbPeripheral];
             } else if ([type isEqualToString:@"didFailConnect"] &&
                        [delegate respondsToSelector:@selector(centralManager:didFailToConnectPeripheral:error:)]) {
