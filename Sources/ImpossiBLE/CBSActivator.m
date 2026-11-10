@@ -1691,7 +1691,9 @@ static void cbs_setDelegate(id self, SEL _cmd, id delegate) {
     cbs_register_central((CBCentralManager *)self);
     dispatch_queue_t q = objc_getAssociatedObject(self, kCBSDelegateQueueKey);
     if (!q) {
-        q = dispatch_get_main_queue();
+        // Called from inside -initWithDelegate:queue:options:, before the
+        // central's queue is known; cbs_post_init reports the state on it.
+        return;
     }
     if (delegate && [delegate respondsToSelector:@selector(centralManagerDidUpdateState:)]) {
         dispatch_async(q, ^{
